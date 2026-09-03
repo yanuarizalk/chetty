@@ -1,0 +1,26 @@
+{
+  "name": "chetty",
+  "version": "1.0.0",
+  "description": "Cross-browser spec-driven floating chatbot extension powered by Gemini, deep-chat, and WXT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox --mv3",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox --mv3",
+    "build:all": "wxt build && wxt build -b firefox --mv3",
+    "zip": "wxt zip",
+    "compile": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@extractus/article-extractor": "^9.0.1",
+    "deep-chat": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.308",
+    "@types/node": "^22.13.10",
+    "typescript": "^5.8.2",
+    "wxt": "^0.21.4"
+  }
+}

@@ -1,0 +1,368 @@
+:host {
+  --chetty-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, Helvetica, Arial, sans-serif;
+  --chetty-radius: 16px;
+  --chetty-transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  --chetty-shadow: 0 16px 48px -8px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--chetty-border);
+  z-index: 2147483640;
+}
+
+/* Light Theme Variables */
+.chetty-theme-light {
+  --chetty-bg: rgba(255, 255, 255, 0.94);
+  --chetty-surface: #f8fafc;
+  --chetty-surface-hover: #f1f5f9;
+  --chetty-surface-active: #e2e8f0;
+  --chetty-text: #0f172a;
+  --chetty-text-muted: #64748b;
+  --chetty-border: rgba(226, 232, 240, 0.85);
+  --chetty-accent: #6366f1;
+  --chetty-accent-hover: #4f46e5;
+  --chetty-accent-light: rgba(99, 102, 241, 0.12);
+  --chetty-danger: #ef4444;
+  --chetty-success: #10b981;
+}
+
+/* Dark Theme Variables */
+.chetty-theme-dark {
+  --chetty-bg: rgba(15, 23, 42, 0.94);
+  --chetty-surface: #1e293b;
+  --chetty-surface-hover: #334155;
+  --chetty-surface-active: #475569;
+  --chetty-text: #f8fafc;
+  --chetty-text-muted: #94a3b8;
+  --chetty-border: rgba(51, 65, 85, 0.7);
+  --chetty-accent: #818cf8;
+  --chetty-accent-hover: #6366f1;
+  --chetty-accent-light: rgba(129, 140, 248, 0.15);
+  --chetty-danger: #f87171;
+  --chetty-success: #34d399;
+}
+
+/* Floating Window Container */
+.chetty-window {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  background: var(--chetty-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: var(--chetty-radius);
+  box-shadow: var(--chetty-shadow);
+  border: 1px solid var(--chetty-border);
+  overflow: hidden;
+  font-family: var(--chetty-font);
+  color: var(--chetty-text);
+  box-sizing: border-box;
+  min-width: 320px;
+  min-height: 420px;
+  max-width: 90vw;
+  max-height: 95vh;
+  z-index: 2147483640;
+  transition: box-shadow 0.2s ease, opacity 0.15s ease;
+}
+
+/* Fixed vs Sticky Modes */
+.chetty-window.mode-fixed {
+  position: fixed;
+}
+
+.chetty-window.mode-sticky {
+  position: absolute;
+}
+
+/* Docked States */
+.chetty-window.docked-left {
+  position: fixed !important;
+  left: 0 !important;
+  top: 0 !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: 0 var(--chetty-radius) var(--chetty-radius) 0 !important;
+  border-left: none !important;
+}
+
+.chetty-window.docked-right {
+  position: fixed !important;
+  right: 0 !important;
+  left: auto !important;
+  top: 0 !important;
+  height: 100vh !important;
+  max-height: 100vh !important;
+  border-radius: var(--chetty-radius) 0 0 var(--chetty-radius) !important;
+  border-right: none !important;
+}
+
+/* Window Header */
+.chetty-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--chetty-surface);
+  border-bottom: 1px solid var(--chetty-border);
+  cursor: grab;
+  user-select: none;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.chetty-header:active {
+  cursor: grabbing;
+}
+
+.chetty-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.chetty-logo-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(99, 102, 241, 0.4);
+}
+
+.chetty-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--chetty-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chetty-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.chetty-btn-icon {
+  background: transparent;
+  border: none;
+  color: var(--chetty-text-muted);
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: var(--chetty-transition);
+  padding: 0;
+}
+
+.chetty-btn-icon:hover {
+  background: var(--chetty-surface-hover);
+  color: var(--chetty-text);
+}
+
+.chetty-btn-icon.active {
+  background: var(--chetty-accent-light);
+  color: var(--chetty-accent);
+}
+
+.chetty-btn-icon.danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--chetty-danger);
+}
+
+/* Context Toolbar */
+.chetty-context-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--chetty-surface);
+  border-bottom: 1px solid var(--chetty-border);
+  font-size: 11px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.chetty-context-label {
+  color: var(--chetty-text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+}
+
+.chetty-chip {
+  padding: 3px 8px;
+  border-radius: 9999px;
+  background: var(--chetty-surface-hover);
+  color: var(--chetty-text-muted);
+  cursor: pointer;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  transition: var(--chetty-transition);
+}
+
+.chetty-chip:hover {
+  background: var(--chetty-surface-active);
+  color: var(--chetty-text);
+}
+
+.chetty-chip.active {
+  background: var(--chetty-accent-light);
+  color: var(--chetty-accent);
+  border-color: var(--chetty-accent);
+  font-weight: 600;
+}
+
+.chetty-context-preview {
+  margin-top: 4px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px dashed var(--chetty-accent);
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--chetty-text);
+  font-size: 11px;
+}
+
+.chetty-context-preview-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+
+.chetty-clear-context {
+  background: transparent;
+  border: none;
+  color: var(--chetty-text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.chetty-clear-context:hover {
+  color: var(--chetty-danger);
+}
+
+/* Chat Body (Hosts Deep-Chat) */
+.chetty-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  min-height: 0;
+}
+
+/* Deep Chat element fills body */
+.chetty-body deep-chat {
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+}
+
+/* Resize Handles */
+.chetty-resize-handle {
+  position: absolute;
+  z-index: 10;
+}
+
+.chetty-resize-corner {
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chetty-resize-corner::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--chetty-text-muted);
+  border-bottom: 2px solid var(--chetty-text-muted);
+  opacity: 0.6;
+}
+
+.chetty-resize-edge-r {
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+}
+
+.chetty-resize-edge-b {
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+/* Minimized Pill Badge */
+.chetty-minimized-pill {
+  position: fixed;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--chetty-bg);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--chetty-border);
+  border-radius: 9999px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  color: var(--chetty-text);
+  font-family: var(--chetty-font);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  z-index: 2147483640;
+  user-select: none;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease;
+}
+
+.chetty-minimized-pill:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 12px 36px rgba(99, 102, 241, 0.4);
+  border-color: var(--chetty-accent);
+}
+
+.chetty-minimized-pill-title {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chetty-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--chetty-success);
+  box-shadow: 0 0 6px var(--chetty-success);
+}
