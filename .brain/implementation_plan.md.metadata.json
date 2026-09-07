@@ -1,0 +1,6 @@
+{
+  "summary": "Updated implementation plan: Google Cloud Console OAuth Client configuration is built into the extension codebase (no manual end-user configuration of client ID needed in the browser popup). The user simply clicks 'Sign in with Google' to authorize their account and cover their own Gemini usage cost with their access token.",
+  "updatedAt": "2026-09-03T03:12:31.914383300Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
