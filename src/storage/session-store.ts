@@ -126,11 +126,16 @@ export async function deleteSession(sessionId: string): Promise<void> {
 /**
  * Subscribe to realtime updates for a specific session across all tabs and windows
  */
-export function subscribeToSession(sessionId: string, callback: (session: ChatSession) => void): () => void {
+export function subscribeToSession(sessionId: string, callback: (session: ChatSession | null) => void): () => void {
   const key = getSessionKey(sessionId);
   const listener = (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
-    if (areaName === 'local' && changes[key] && changes[key].newValue) {
-      callback(changes[key].newValue as ChatSession);
+    if (areaName === 'local' && changes[key]) {
+      if (changes[key].newValue) {
+        callback(changes[key].newValue as ChatSession);
+      } else {
+        // Session was deleted
+        callback(null);
+      }
     }
   };
 

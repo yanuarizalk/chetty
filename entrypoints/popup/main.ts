@@ -1,4 +1,4 @@
-import { getAllSessions } from '../../src/storage/session-store';
+import { getAllSessions, subscribeToSessionList } from '../../src/storage/session-store';
 import { getSettings, saveSettings } from '../../src/storage/settings-store';
 import { signInWithGoogle, signOut } from '../../src/auth/token-manager';
 import { checkExtensionPermissions, requestMissingPermissions } from '../../src/components/permission-banner';
@@ -33,6 +33,9 @@ async function initPopup() {
 
   // 3. Load Sessions
   await loadSessionsList();
+  subscribeToSessionList(() => {
+    loadSessionsList();
+  });
 
   // 4. Check Permissions
   await checkPermissionsUI();
@@ -70,12 +73,15 @@ async function initPopup() {
     btnNewSession.setAttribute('disabled', 'true');
     btnNewSession.textContent = 'Opening...';
     try {
-      await chrome.runtime.sendMessage({
+      const resp = await chrome.runtime.sendMessage({
         type: 'CHETTY_BG_NEW_SESSION',
       });
+      if (resp && resp.error) {
+        throw new Error(resp.error);
+      }
       window.close();
     } catch (err) {
-      alert(`Failed to open new session: ${(err as Error).message}`);
+      alert((err as Error).message);
       btnNewSession.removeAttribute('disabled');
       btnNewSession.textContent = 'Start New Session';
     }
@@ -96,13 +102,16 @@ async function initPopup() {
     btnOpenSession.disabled = true;
     btnOpenSession.textContent = 'Opening...';
     try {
-      await chrome.runtime.sendMessage({
+      const resp = await chrome.runtime.sendMessage({
         type: 'CHETTY_BG_OPEN_SESSION',
         sessionId,
       });
+      if (resp && resp.error) {
+        throw new Error(resp.error);
+      }
       window.close();
     } catch (err) {
-      alert(`Failed to open session: ${(err as Error).message}`);
+      alert((err as Error).message);
       btnOpenSession.disabled = false;
       btnOpenSession.textContent = 'Open';
     }

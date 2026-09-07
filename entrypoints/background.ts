@@ -64,6 +64,48 @@ export default defineBackground(() => {
       return true;
     }
 
+    // Helper to inject and send message to tab
+    const sendTabMessageWithFallback = async (tab: chrome.tabs.Tab, msg: any) => {
+      if (!tab.id) {
+        throw new Error('No active tab ID available');
+      }
+
+      const url = tab.url || '';
+      if (
+        url.startsWith('chrome://') ||
+        url.startsWith('chrome-extension://') ||
+        url.startsWith('about:') ||
+        url.startsWith('moz-extension://') ||
+        url.startsWith('edge://') ||
+        url.startsWith('view-source:') ||
+        url.includes('addons.mozilla.org') ||
+        url.includes('chromewebstore.google.com')
+      ) {
+        throw new Error(
+          'Chetty cannot run on browser system pages or extension stores. Please navigate to a standard webpage (e.g. Wikipedia or GitHub) and try again.'
+        );
+      }
+
+      try {
+        return await chrome.tabs.sendMessage(tab.id, msg);
+      } catch (firstErr) {
+        // Tab was likely open prior to extension install/reload
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ['content-scripts/content.js'],
+          });
+          // Small delay to allow content script registration
+          await new Promise((r) => setTimeout(r, 100));
+          return await chrome.tabs.sendMessage(tab.id, msg);
+        } catch (injectErr) {
+          throw new Error(
+            'This tab was open before Chetty was installed. Please refresh this page (press F5 or Reload) to activate Chetty!'
+          );
+        }
+      }
+    };
+
     // 3. Open new session on active tab
     if (message.type === 'CHETTY_BG_NEW_SESSION') {
       (async () => {
@@ -74,25 +116,11 @@ export default defineBackground(() => {
             return;
           }
 
-          // Ensure content script is injected or ping tab
-          try {
-            const resp = await chrome.tabs.sendMessage(activeTab.id, {
-              type: 'CHETTY_OPEN_NEW_SESSION',
-              title: message.title,
-            });
-            sendResponse(resp);
-          } catch {
-            // If content script was not ready, inject it dynamically
-            await chrome.scripting.executeScript({
-              target: { tabId: activeTab.id },
-              files: ['content-scripts/content.js'],
-            });
-            const resp = await chrome.tabs.sendMessage(activeTab.id, {
-              type: 'CHETTY_OPEN_NEW_SESSION',
-              title: message.title,
-            });
-            sendResponse(resp);
-          }
+          const resp = await sendTabMessageWithFallback(activeTab, {
+            type: 'CHETTY_OPEN_NEW_SESSION',
+            title: message.title,
+          });
+          sendResponse(resp || { success: true });
         } catch (err) {
           sendResponse({ success: false, error: (err as Error).message });
         }
@@ -110,23 +138,11 @@ export default defineBackground(() => {
             return;
           }
 
-          try {
-            const resp = await chrome.tabs.sendMessage(activeTab.id, {
-              type: 'CHETTY_OPEN_SESSION',
-              sessionId: message.sessionId,
-            });
-            sendResponse(resp);
-          } catch {
-            await chrome.scripting.executeScript({
-              target: { tabId: activeTab.id },
-              files: ['content-scripts/content.js'],
-            });
-            const resp = await chrome.tabs.sendMessage(activeTab.id, {
-              type: 'CHETTY_OPEN_SESSION',
-              sessionId: message.sessionId,
-            });
-            sendResponse(resp);
-          }
+          const resp = await sendTabMessageWithFallback(activeTab, {
+            type: 'CHETTY_OPEN_SESSION',
+            sessionId: message.sessionId,
+          });
+          sendResponse(resp || { success: true });
         } catch (err) {
           sendResponse({ success: false, error: (err as Error).message });
         }

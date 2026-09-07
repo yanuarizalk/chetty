@@ -2,7 +2,7 @@ import 'deep-chat';
 import type { DeepChat } from 'deep-chat';
 import type { ChatSession, ContextSnippet, ContextType, DockPosition, FloatingMode, WindowState } from '../types/session';
 import type { ExtensionSettings } from '../types/settings';
-import { addMessageToSession, getSession, subscribeToSession, updateSessionTitle } from '../storage/session-store';
+import { addMessageToSession, deleteSession, getSession, subscribeToSession, updateSessionTitle } from '../storage/session-store';
 import { getSettings, subscribeSettings } from '../storage/settings-store';
 import { getChatProvider } from '../providers/base';
 import { extractCurrentPageContext } from '../context/extractor';
@@ -90,16 +90,26 @@ export class FloatingWindow {
           </div>
           <div class="chetty-header-controls">
             <!-- Sticky / Fixed Mode Toggle -->
-            <button class="chetty-btn-icon ${this.state.floatingMode === 'sticky' ? 'active' : ''}" id="btn-mode-${this.session.id}" title="Toggle Floating Mode (${this.state.floatingMode})">
+            <button class="chetty-btn-icon ${this.state.floatingMode === 'sticky' ? 'active' : ''}" id="btn-mode-${this.session.id}" title="${this.state.floatingMode === 'sticky' ? 'Sticky mode: Scrolls with page (Click to switch to Fixed)' : 'Fixed mode: Stays in viewport (Click to switch to Sticky)'}">
               ${this.state.floatingMode === 'sticky' ? '📜' : '📌'}
             </button>
 
             <!-- Pin / Unpin Button (Active when docked) -->
             ${this.state.dockPosition !== 'none' ? `
-              <button class="chetty-btn-icon ${this.state.isPinned ? 'active' : ''}" id="btn-pin-${this.session.id}" title="${this.state.isPinned ? 'Unpin (Overlay document)' : 'Pin (Reflow document)'}">
-                ${this.state.isPinned ? '📍' : '🔓'}
+              <button class="chetty-btn-icon ${this.state.isPinned ? 'active' : ''}" id="btn-pin-${this.session.id}" title="${this.state.isPinned ? 'Pinned: Webpage reflows around chatbox (Click to Unpin)' : 'Unpinned: Floating over webpage without reflow (Click to Pin)'}">
+                ${this.state.isPinned ? '🔒' : '🔓'}
               </button>
             ` : ''}
+
+            <!-- Rename Session Button -->
+            <button class="chetty-btn-icon" id="btn-rename-${this.session.id}" title="Rename session">
+              ✏️
+            </button>
+
+            <!-- Delete Session Button -->
+            <button class="chetty-btn-icon danger" id="btn-delete-${this.session.id}" title="Delete session across all tabs">
+              🗑️
+            </button>
 
             <!-- Minimize Button -->
             <button class="chetty-btn-icon" id="btn-minimize-${this.session.id}" title="Minimize">
@@ -107,7 +117,7 @@ export class FloatingWindow {
             </button>
 
             <!-- Close Button -->
-            <button class="chetty-btn-icon danger" id="btn-close-${this.session.id}" title="Close">
+            <button class="chetty-btn-icon danger" id="btn-close-${this.session.id}" title="Close window on this tab">
               ✕
             </button>
           </div>
@@ -336,9 +346,25 @@ export class FloatingWindow {
     bodyEl.appendChild(deepChat);
   }
 
+  private updatePinButtonUI(btnPin: HTMLElement): void {
+    btnPin.textContent = this.state.isPinned ? '🔒' : '🔓';
+    btnPin.title = this.state.isPinned
+      ? 'Pinned: Webpage reflows around chatbox (Click to Unpin)'
+      : 'Unpinned: Floating over webpage without reflow (Click to Pin)';
+    btnPin.classList.toggle('active', this.state.isPinned);
+  }
+
+  private updateModeButtonUI(btnMode: HTMLElement): void {
+    btnMode.textContent = this.state.floatingMode === 'sticky' ? '📜' : '📌';
+    btnMode.title = this.state.floatingMode === 'sticky'
+      ? 'Sticky mode: Scrolls with page (Click to switch to Fixed)'
+      : 'Fixed mode: Stays in viewport (Click to switch to Sticky)';
+    btnMode.classList.toggle('active', this.state.floatingMode === 'sticky');
+  }
+
   private bindHeaderControls(): void {
     // Mode toggle (Sticky vs Fixed)
-    const btnMode = this.container.querySelector(`#btn-mode-${this.session.id}`);
+    const btnMode = this.container.querySelector(`#btn-mode-${this.session.id}`) as HTMLElement;
     btnMode?.addEventListener('click', (e) => {
       e.stopPropagation();
       if (this.state.dockPosition !== 'none') {
@@ -347,16 +373,49 @@ export class FloatingWindow {
         this.resetViewportReflow();
       }
       this.state.floatingMode = this.state.floatingMode === 'fixed' ? 'sticky' : 'fixed';
+      this.updateModeButtonUI(btnMode);
       this.refreshWindowStyle();
     });
 
     // Pin toggle (When docked)
-    const btnPin = this.container.querySelector(`#btn-pin-${this.session.id}`);
+    const btnPin = this.container.querySelector(`#btn-pin-${this.session.id}`) as HTMLElement;
     btnPin?.addEventListener('click', (e) => {
       e.stopPropagation();
       this.state.isPinned = !this.state.isPinned;
-      btnPin.classList.toggle('active', this.state.isPinned);
+      this.updatePinButtonUI(btnPin);
       this.applyViewportReflow();
+    });
+
+    // Rename Session
+    const btnRename = this.container.querySelector(`#btn-rename-${this.session.id}`);
+    btnRename?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const currentTitle = this.session.title;
+      const newTitle = prompt('Enter new session title:', currentTitle);
+      if (newTitle !== null && newTitle.trim() && newTitle.trim() !== currentTitle) {
+        const trimmed = newTitle.trim();
+        await updateSessionTitle(this.session.id, trimmed);
+        this.session.title = trimmed;
+        const titleEl = this.container.querySelector('.chetty-title');
+        if (titleEl) {
+          titleEl.textContent = trimmed;
+          titleEl.setAttribute('title', trimmed);
+        }
+      }
+    });
+
+    // Delete Session
+    const btnDelete = this.container.querySelector(`#btn-delete-${this.session.id}`);
+    btnDelete?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const confirmed = confirm(
+        `Are you sure you want to delete session "${this.session.title}"?\n\nThis will remove the conversation and close it across all open browser tabs.`
+      );
+      if (confirmed) {
+        await deleteSession(this.session.id);
+        this.destroy();
+        this.onClose();
+      }
     });
 
     // Minimize
@@ -597,24 +656,30 @@ export class FloatingWindow {
 
     // Re-render pin button if needed
     const controls = this.container.querySelector('.chetty-header-controls');
-    let btnPin = this.container.querySelector(`#btn-pin-${this.session.id}`);
+    let btnPin = this.container.querySelector(`#btn-pin-${this.session.id}`) as HTMLElement;
     if (this.state.dockPosition !== 'none' && !btnPin && controls) {
       const pinHtml = `
-        <button class="chetty-btn-icon ${this.state.isPinned ? 'active' : ''}" id="btn-pin-${this.session.id}" title="${this.state.isPinned ? 'Unpin (Overlay document)' : 'Pin (Reflow document)'}">
-          ${this.state.isPinned ? '📍' : '🔓'}
+        <button class="chetty-btn-icon ${this.state.isPinned ? 'active' : ''}" id="btn-pin-${this.session.id}" title="${this.state.isPinned ? 'Pinned: Webpage reflows around chatbox (Click to Unpin)' : 'Unpinned: Floating over webpage without reflow (Click to Pin)'}">
+          ${this.state.isPinned ? '🔒' : '🔓'}
         </button>
       `;
-      const btnMin = controls.querySelector(`#btn-minimize-${this.session.id}`);
-      btnMin?.insertAdjacentHTML('beforebegin', pinHtml);
-      btnPin = this.container.querySelector(`#btn-pin-${this.session.id}`);
+      const btnRename = controls.querySelector(`#btn-rename-${this.session.id}`);
+      if (btnRename) {
+        btnRename.insertAdjacentHTML('beforebegin', pinHtml);
+      } else {
+        controls.insertAdjacentHTML('afterbegin', pinHtml);
+      }
+      btnPin = this.container.querySelector(`#btn-pin-${this.session.id}`) as HTMLElement;
       btnPin?.addEventListener('click', (e) => {
         e.stopPropagation();
         this.state.isPinned = !this.state.isPinned;
-        btnPin?.classList.toggle('active', this.state.isPinned);
+        this.updatePinButtonUI(btnPin);
         this.applyViewportReflow();
       });
     } else if (this.state.dockPosition === 'none' && btnPin) {
       btnPin.remove();
+    } else if (btnPin) {
+      this.updatePinButtonUI(btnPin);
     }
   }
 
@@ -680,10 +745,23 @@ export class FloatingWindow {
   private setupListeners(): void {
     // 1. Cross-tab & Multi-window session sync
     this.unsubscribeSession = subscribeToSession(this.session.id, (updatedSession) => {
+      if (!updatedSession) {
+        // Session was deleted across tabs! Close this window immediately.
+        this.destroy();
+        this.onClose();
+        return;
+      }
       this.session = updatedSession;
       // Update header title
       const titleEl = this.container.querySelector('.chetty-title');
-      if (titleEl) titleEl.textContent = updatedSession.title;
+      if (titleEl) {
+        titleEl.textContent = updatedSession.title;
+        titleEl.setAttribute('title', updatedSession.title);
+      }
+      const pillTitleEl = this.container.querySelector('.chetty-minimized-pill-title');
+      if (pillTitleEl) {
+        pillTitleEl.textContent = updatedSession.title;
+      }
 
       // Update deep-chat messages if new messages came from another tab
       if (this.deepChatEl && updatedSession.messages.length > 0) {
