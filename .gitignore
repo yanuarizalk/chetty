@@ -1,1 +1,5 @@
 node_modules
+# WXT & Vite Build Outputs
+.output/
+.wxt/
+dist/

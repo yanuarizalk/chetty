@@ -27,29 +27,9 @@
       </div>
     </header>
 
-    <!-- Google OAuth Authentication Card -->
-    <section class="section auth-section">
-      <div id="auth-signed-out" class="auth-box">
-        <div class="auth-icon-placeholder">G</div>
-        <div class="auth-text">
-          <div class="auth-title">Google SSO OAuth</div>
-          <div class="auth-desc">Connect your Google account to authorize Gemini API queries.</div>
-        </div>
-        <button id="btn-signin-google" class="btn-primary auth-btn">
-          Sign In
-        </button>
-      </div>
-
-      <div id="auth-signed-in" class="auth-box signed-in" style="display: none;">
-        <img id="user-avatar" class="user-avatar" src="" alt="Avatar" />
-        <div class="auth-text">
-          <div class="auth-title" id="user-name">Google User</div>
-          <div class="auth-desc" id="user-email">user@gmail.com</div>
-        </div>
-        <button id="btn-signout-google" class="btn-secondary danger auth-btn">
-          Sign Out
-        </button>
-      </div>
+    <!-- Provider Integration Section (Rendered by Active AI Provider) -->
+    <section class="section provider-section" id="provider-settings-container">
+      <!-- IChatProvider.renderPopupSettings will mount here -->
     </section>
 
     <!-- Session Management Section -->

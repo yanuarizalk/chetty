@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, type ExtensionSettings, type UserAuth } from '../types/settings';
+import { DEFAULT_SETTINGS, type ExtensionSettings, type GeminiWebConfig } from '../types/settings';
 
 const SETTINGS_KEY = 'chetty_settings';
 
@@ -9,9 +9,9 @@ export async function getSettings(): Promise<ExtensionSettings> {
       return {
         ...DEFAULT_SETTINGS,
         ...result[SETTINGS_KEY],
-        auth: {
-          ...DEFAULT_SETTINGS.auth,
-          ...(result[SETTINGS_KEY].auth || {}),
+        geminiWeb: {
+          ...DEFAULT_SETTINGS.geminiWeb,
+          ...(result[SETTINGS_KEY].geminiWeb || {}),
         },
       };
     }
@@ -26,29 +26,25 @@ export async function saveSettings(updates: Partial<ExtensionSettings>): Promise
   const updated: ExtensionSettings = {
     ...current,
     ...updates,
-    auth: updates.auth ? { ...current.auth, ...updates.auth } : current.auth,
+    geminiWeb: updates.geminiWeb ? { ...current.geminiWeb, ...updates.geminiWeb } : current.geminiWeb,
   };
   await chrome.storage.local.set({ [SETTINGS_KEY]: updated });
   return updated;
 }
 
-export async function updateAuth(auth: Partial<UserAuth>): Promise<UserAuth> {
+export async function updateGeminiWebConfig(updates: Partial<GeminiWebConfig>): Promise<GeminiWebConfig> {
   const current = await getSettings();
-  const newAuth: UserAuth = {
-    ...current.auth,
-    ...auth,
+  const newConfig: GeminiWebConfig = {
+    ...current.geminiWeb,
+    ...updates,
   };
-  await saveSettings({ auth: newAuth });
-  return newAuth;
+  await saveSettings({ geminiWeb: newConfig });
+  return newConfig;
 }
 
-export async function clearAuth(): Promise<void> {
-  await updateAuth({
-    isAuthenticated: false,
-    accessToken: null,
-    expiresAt: null,
-    profile: null,
-  });
+export async function getGeminiWebConfig(): Promise<GeminiWebConfig> {
+  const settings = await getSettings();
+  return settings.geminiWeb;
 }
 
 export function subscribeSettings(callback: (settings: ExtensionSettings) => void): () => void {

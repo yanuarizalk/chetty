@@ -1,7 +1,7 @@
 import { getAllSessions, subscribeToSessionList } from '../../src/storage/session-store';
 import { getSettings, saveSettings } from '../../src/storage/settings-store';
-import { signInWithGoogle, signOut } from '../../src/auth/token-manager';
 import { checkExtensionPermissions, requestMissingPermissions } from '../../src/components/permission-banner';
+import { getChatProvider } from '../../src/providers/base';
 import type { FloatingMode, ThemeMode } from '../../src/types/settings';
 
 async function initPopup() {
@@ -28,44 +28,23 @@ async function initPopup() {
   // Apply Default Floating Mode
   updateFloatingModeButtons(settings.defaultFloatingMode);
 
-  // Apply Auth State
-  updateAuthUI(settings.auth);
+  // 3. Render Provider Settings (e.g. Select Gemini Active Web)
+  const provider = getChatProvider('gemini');
+  const providerContainer = document.getElementById('provider-settings-container');
+  if (providerContainer && provider.renderPopupSettings) {
+    await provider.renderPopupSettings(providerContainer);
+  }
 
-  // 3. Load Sessions
+  // 4. Load Sessions
   await loadSessionsList();
   subscribeToSessionList(() => {
     loadSessionsList();
   });
 
-  // 4. Check Permissions
+  // 5. Check Permissions
   await checkPermissionsUI();
 
   // --- EVENT LISTENERS ---
-
-  // Google Sign-In
-  const btnSignIn = document.getElementById('btn-signin-google');
-  btnSignIn?.addEventListener('click', async () => {
-    btnSignIn.setAttribute('disabled', 'true');
-    btnSignIn.textContent = 'Connecting...';
-    try {
-      const profile = await signInWithGoogle();
-      settings = await getSettings();
-      updateAuthUI(settings.auth);
-    } catch (err) {
-      alert(`Google Sign-In failed: ${(err as Error).message}`);
-    } finally {
-      btnSignIn.removeAttribute('disabled');
-      btnSignIn.textContent = 'Sign In';
-    }
-  });
-
-  // Google Sign-Out
-  const btnSignOut = document.getElementById('btn-signout-google');
-  btnSignOut?.addEventListener('click', async () => {
-    await signOut();
-    settings = await getSettings();
-    updateAuthUI(settings.auth);
-  });
 
   // Start New Session
   const btnNewSession = document.getElementById('btn-new-session');
@@ -158,32 +137,6 @@ function updateFloatingModeButtons(mode: FloatingMode) {
   btns.forEach((btn) => {
     btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
   });
-}
-
-function updateAuthUI(auth: any) {
-  const signedOutBox = document.getElementById('auth-signed-out');
-  const signedInBox = document.getElementById('auth-signed-in');
-  const userAvatar = document.getElementById('user-avatar') as HTMLImageElement;
-  const userName = document.getElementById('user-name');
-  const userEmail = document.getElementById('user-email');
-
-  if (auth && auth.isAuthenticated) {
-    if (signedOutBox) signedOutBox.style.display = 'none';
-    if (signedInBox) signedInBox.style.display = 'flex';
-    if (userName) userName.textContent = auth.profile?.name || 'Google User';
-    if (userEmail) userEmail.textContent = auth.profile?.email || 'user@gmail.com';
-    if (userAvatar) {
-      if (auth.profile?.picture) {
-        userAvatar.src = auth.profile.picture;
-        userAvatar.style.display = 'block';
-      } else {
-        userAvatar.style.display = 'none';
-      }
-    }
-  } else {
-    if (signedOutBox) signedOutBox.style.display = 'flex';
-    if (signedInBox) signedInBox.style.display = 'none';
-  }
 }
 
 async function loadSessionsList() {

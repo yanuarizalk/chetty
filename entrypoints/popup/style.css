@@ -159,95 +159,106 @@ body {
   color: var(--text-secondary);
 }
 
-/* Auth Card */
-.auth-box {
+/* Provider Integration Card */
+.gemini-web-card {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   padding: 12px;
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
 }
 
-.auth-icon-placeholder {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: #ea4335;
-  color: #ffffff;
+.gemini-web-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gemini-web-title {
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gemini-sparkle {
+  color: #a855f7;
+  font-size: 14px;
+}
+
+.gemini-status-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.gemini-status-badge.connected {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.gemini-status-badge.busy {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.gemini-status-badge.offline {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.gemini-tab-selector-group {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-icon-only {
+  padding: 0 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 15px;
-  flex-shrink: 0;
-}
-
-.user-avatar {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  object-fit: cover;
-  border: 2px solid var(--accent);
-  flex-shrink: 0;
-}
-
-.auth-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.auth-title {
-  font-size: 13px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auth-desc {
-  font-size: 11px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auth-btn {
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: var(--radius-sm);
   cursor: pointer;
-  border: none;
-  flex-shrink: 0;
-  transition: var(--transition);
+  border-radius: var(--radius-md);
 }
 
-.btn-primary {
-  background: var(--accent);
-  color: #ffffff;
+.gemini-web-actions {
+  display: flex;
+  gap: 6px;
 }
 
-.btn-primary:hover {
-  background: var(--accent-hover);
+.gemini-web-help {
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  line-height: 1.35;
 }
 
 .btn-secondary {
   background: var(--bg-surface-hover);
   color: var(--text-primary);
   border: 1px solid var(--border-color);
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
 }
 
-.btn-secondary.danger {
-  color: var(--danger);
+.btn-secondary:hover:not(:disabled) {
+  background: var(--bg-surface-active);
+  border-color: var(--accent);
 }
 
-.btn-secondary.danger:hover {
-  background: rgba(239, 68, 68, 0.15);
-  border-color: var(--danger);
-}
 
 /* Action Buttons */
 .action-buttons {

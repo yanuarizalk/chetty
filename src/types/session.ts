@@ -26,6 +26,7 @@ export interface ChatSession {
   updatedAt: number;
   messages: ChatMessage[];
   contextMode?: ContextType;
+  geminiConversationId?: string;
 }
 
 export type FloatingMode = 'fixed' | 'sticky';

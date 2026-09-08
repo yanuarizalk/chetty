@@ -148,6 +148,12 @@ export class FloatingWindow {
           </div>
         </div>
 
+        <!-- Busy Status Banner -->
+        <div class="chetty-busy-banner" id="busy-banner-${this.session.id}">
+          <span class="chetty-busy-spinner">⏳</span>
+          <span class="chetty-busy-text" id="busy-text-${this.session.id}">Gemini Web is generating...</span>
+        </div>
+
         <!-- Body with Deep Chat -->
         <div class="chetty-body" id="body-${this.session.id}"></div>
 
@@ -161,6 +167,7 @@ export class FloatingWindow {
     this.shadowRoot.appendChild(this.container);
 
     this.mountDeepChat();
+    this.updateBusyState(this.settings.geminiWeb?.isBusy || false, this.settings.geminiWeb?.busySessionId);
     this.bindHeaderControls();
     this.bindDragAndResize();
     this.bindContextControls();
@@ -307,10 +314,11 @@ export class FloatingWindow {
           let accumulatedResponse = '';
 
           await provider.streamMessage({
+            sessionId: this.session.id,
             messages: this.session.messages,
             currentPrompt: promptText,
             contextSnippet,
-            model: this.settings.model,
+            model: provider.defaultModel,
             callbacks: {
               onChunk: (chunk) => {
                 accumulatedResponse += chunk;
@@ -776,7 +784,7 @@ export class FloatingWindow {
       }
     });
 
-    // 2. Settings sync (theme, opacity)
+    // 2. Settings sync (theme, opacity, geminiWeb busy state)
     this.unsubscribeSettings = subscribeSettings((newSettings) => {
       this.settings = newSettings;
       this.container.className = `chetty-window-wrapper chetty-theme-${newSettings.theme}`;
@@ -784,7 +792,25 @@ export class FloatingWindow {
       if (windowEl) {
         windowEl.style.opacity = `${newSettings.opacity}`;
       }
+      this.updateBusyState(newSettings.geminiWeb?.isBusy || false, newSettings.geminiWeb?.busySessionId);
     });
+  }
+
+  private updateBusyState(isBusy: boolean, busySessionId?: string | null): void {
+    const banner = this.container.querySelector(`#busy-banner-${this.session.id}`) as HTMLElement;
+    const busyText = this.container.querySelector(`#busy-text-${this.session.id}`) as HTMLElement;
+    if (!banner) return;
+
+    if (isBusy) {
+      banner.style.display = 'flex';
+      if (busySessionId && busySessionId !== this.session.id) {
+        if (busyText) busyText.textContent = 'Gemini Web is generating in another window... Input locked.';
+      } else {
+        if (busyText) busyText.textContent = 'Generating response via Gemini Web...';
+      }
+    } else {
+      banner.style.display = 'none';
+    }
   }
 
   public destroy(): void {

@@ -1,190 +1,240 @@
 import type { IChatProvider, SendMessageOptions } from '../types/provider';
 import { formatContextForPrompt } from '../context/extractor';
-import { getValidAccessToken } from '../auth/token-manager';
+import { getGeminiWebConfig, updateGeminiWebConfig } from '../storage/settings-store';
+import { getSession, saveSession } from '../storage/session-store';
 
 export class GeminiChatProvider implements IChatProvider {
   readonly id = 'gemini';
-  readonly name = 'Google Gemini';
-  readonly defaultModel = 'gemini-2.5-flash';
-  readonly supportedModels = ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-3.7-flash'];
+  readonly name = 'Google Gemini Web';
+  readonly defaultModel = 'gemini-web';
+  readonly supportedModels = ['gemini-web'];
 
   async isConfigured(): Promise<boolean> {
-    const token = await getValidAccessToken();
-    return !!token;
+    const config = await getGeminiWebConfig();
+    if (!config.selectedTabId) return false;
+    try {
+      const tab = await chrome.tabs.get(config.selectedTabId);
+      return !!(tab && tab.url && tab.url.includes('gemini.google.com'));
+    } catch {
+      return false;
+    }
   }
 
   async sendMessage(options: SendMessageOptions): Promise<string> {
-    let fullText = '';
+    let result = '';
     await this.streamMessage({
       ...options,
       callbacks: {
         onChunk: (chunk) => {
-          fullText += chunk;
+          result = chunk;
         },
         onError: (err) => {
           options.callbacks?.onError(err);
         },
-        onFinish: (result) => {
-          options.callbacks?.onFinish(result);
+        onFinish: (fullText) => {
+          result = fullText;
+          options.callbacks?.onFinish(fullText);
         },
       },
     });
-    return fullText;
+    return result;
   }
 
   async streamMessage(options: SendMessageOptions): Promise<void> {
-    const accessToken = await getValidAccessToken();
-    if (!accessToken) {
+    const config = await getGeminiWebConfig();
+    if (!config.selectedTabId) {
       const err = new Error(
-        'Not signed in with Google. Please click the Chetty toolbar icon and select "Sign in with Google" to connect your account.'
+        'No active Gemini Web tab selected. Please click the Chetty extension icon and choose "Select Gemini Active Web".'
       );
       options.callbacks?.onError(err);
       throw err;
     }
 
-    const model = options.model || this.defaultModel;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
-
-    // 1. Construct multi-turn contents
-    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
-
-    // Add prior session conversation turns
-    for (const msg of options.messages) {
-      if (msg.role === 'user') {
-        const textWithContext = msg.contextSnippet
-          ? formatContextForPrompt(msg.contextSnippet) + msg.text
-          : msg.text;
-        contents.push({
-          role: 'user',
-          parts: [{ text: textWithContext }],
-        });
-      } else if (msg.role === 'model') {
-        contents.push({
-          role: 'model',
-          parts: [{ text: msg.text }],
-        });
-      }
+    if (config.isBusy) {
+      const err = new Error('Gemini Web is currently busy generating another response. Please wait for it to finish.');
+      options.callbacks?.onError(err);
+      throw err;
     }
 
-    // Add the current prompt with current context snippet
+    // Get session to check for existing geminiConversationId
+    const session = await getSession(options.sessionId);
     const contextPrefix = formatContextForPrompt(options.contextSnippet);
-    contents.push({
-      role: 'user',
-      parts: [{ text: contextPrefix + options.currentPrompt }],
-    });
+    const fullPrompt = contextPrefix + options.currentPrompt;
 
-    const body = {
-      contents,
-      systemInstruction: {
-        parts: [
-          {
-            text:
-              'You are Chetty, a smart and helpful cross-browser floating AI web assistant. ' +
-              'You help the user understand, analyze, summarize, and explore content on web pages. ' +
-              'When page or element context is provided, use it to give accurate, grounded, and concise answers. ' +
-              'Format your responses with clean Markdown.',
-          },
-        ],
-      },
-      generationConfig: {
-        temperature: 0.7,
-        topK: 40,
-        topP: 0.95,
-      },
-    };
-
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${accessToken}`,
+    // Send prompt through background automation broker
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        {
+          type: 'CHETTY_GEMINI_AUTOMATE_PROMPT',
+          tabId: config.selectedTabId,
+          sessionId: options.sessionId,
+          conversationId: session?.geminiConversationId || null,
+          prompt: fullPrompt,
         },
-        body: JSON.stringify(body),
-        signal: options.signal,
-      });
-    } catch (err) {
-      const error = new Error(`Network error calling Gemini: ${(err as Error).message}`);
-      options.callbacks?.onError(error);
-      throw error;
-    }
+        (response) => {
+          if (chrome.runtime.lastError) {
+            const err = new Error(chrome.runtime.lastError.message);
+            options.callbacks?.onError(err);
+            reject(err);
+            return;
+          }
 
-    if (!response.ok) {
-      let errorMsg = `Gemini API error (${response.status} ${response.statusText})`;
-      try {
-        const errJson = await response.json();
-        if (errJson.error?.message) {
-          errorMsg = errJson.error.message;
+          if (!response || !response.success) {
+            const err = new Error(response?.error || 'Failed to automate Gemini Web prompt');
+            options.callbacks?.onError(err);
+            reject(err);
+            return;
+          }
+
+          if (response.newConversationId && session && !session.geminiConversationId) {
+            session.geminiConversationId = response.newConversationId;
+            saveSession(session);
+          }
+
+          options.callbacks?.onFinish(response.responseText);
+          resolve();
         }
-      } catch {
-        // use fallback text
-      }
+      );
 
-      if (response.status === 401) {
-        errorMsg = 'Google authentication expired or invalid. Please sign in again via the Chetty popup.';
-      }
-
-      const error = new Error(errorMsg);
-      options.callbacks?.onError(error);
-      throw error;
-    }
-
-    if (!response.body) {
-      const error = new Error('No response stream received from Gemini');
-      options.callbacks?.onError(error);
-      throw error;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-    let accumulatedText = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data:')) continue;
-
-          const jsonStr = trimmed.replace(/^data:\s*/, '');
-          if (jsonStr === '[DONE]') continue;
-
-          try {
-            const data = JSON.parse(jsonStr);
-            const candidates = data.candidates;
-            if (candidates && candidates.length > 0) {
-              const parts = candidates[0].content?.parts;
-              if (parts && parts.length > 0) {
-                for (const part of parts) {
-                  if (part.text) {
-                    accumulatedText += part.text;
-                    options.callbacks?.onChunk(part.text);
-                  }
-                }
-              }
-            }
-          } catch {
-            // Ignore incomplete line parse
+      // Listen for streaming chunk updates from background
+      const chunkListener = (message: any) => {
+        if (
+          message.type === 'CHETTY_GEMINI_STREAM_CHUNK' &&
+          message.sessionId === options.sessionId
+        ) {
+          options.callbacks?.onChunk(message.chunkText);
+          if (message.done) {
+            chrome.runtime.onMessage.removeListener(chunkListener);
           }
         }
+      };
+      chrome.runtime.onMessage.addListener(chunkListener);
+    });
+  }
+
+  /**
+   * Render provider settings inside popup: "Select Gemini Active Web"
+   */
+  async renderPopupSettings(container: HTMLElement): Promise<void> {
+    container.innerHTML = `
+      <div class="gemini-web-card">
+        <div class="gemini-web-header">
+          <div class="gemini-web-title">
+            <span class="gemini-sparkle">✦</span>
+            <span>Select Gemini Active Web</span>
+          </div>
+          <span class="gemini-status-badge" id="gemini-tab-status">Checking...</span>
+        </div>
+
+        <div class="gemini-tab-selector-group">
+          <select id="select-gemini-active-tab" class="select-input">
+            <option value="" disabled selected>Searching for gemini.google.com tabs...</option>
+          </select>
+          <button id="btn-refresh-gemini-tabs" class="btn-secondary btn-icon-only" title="Refresh open Gemini tabs">
+            🔄
+          </button>
+        </div>
+
+        <div class="gemini-web-actions">
+          <button id="btn-open-gemini-web" class="btn-secondary" style="font-size: 11.5px; width: 100%;">
+            🌐 Open gemini.google.com
+          </button>
+        </div>
+
+        <div class="gemini-web-help" id="gemini-tab-help">
+          Chetty automates this tab to generate responses with your signed-in Gemini session.
+        </div>
+      </div>
+    `;
+
+    const selectEl = container.querySelector('#select-gemini-active-tab') as HTMLSelectElement;
+    const statusEl = container.querySelector('#gemini-tab-status') as HTMLElement;
+    const btnRefresh = container.querySelector('#btn-refresh-gemini-tabs') as HTMLButtonElement;
+    const btnOpen = container.querySelector('#btn-open-gemini-web') as HTMLButtonElement;
+
+    const loadTabs = async () => {
+      selectEl.innerHTML = '<option value="" disabled selected>Searching...</option>';
+      statusEl.textContent = 'Scanning...';
+      statusEl.className = 'gemini-status-badge';
+
+      let tabs: chrome.tabs.Tab[] = [];
+      try {
+        tabs = await chrome.tabs.query({ url: '*://gemini.google.com/*' });
+      } catch {
+        // Fallback query all
+        const allTabs = await chrome.tabs.query({});
+        tabs = allTabs.filter((t) => t.url && t.url.includes('gemini.google.com'));
       }
 
-      options.callbacks?.onFinish(accumulatedText);
-    } catch (streamErr) {
-      if ((streamErr as Error).name === 'AbortError') {
-        options.callbacks?.onFinish(accumulatedText);
+      const currentConfig = await getGeminiWebConfig();
+
+      if (tabs.length === 0) {
+        selectEl.innerHTML = '<option value="" disabled selected>No gemini.google.com tab found</option>';
+        statusEl.textContent = 'Offline';
+        statusEl.className = 'gemini-status-badge offline';
+        await updateGeminiWebConfig({ selectedTabId: null, selectedTabTitle: null });
         return;
       }
-      options.callbacks?.onError(streamErr as Error);
-      throw streamErr;
-    }
+
+      selectEl.innerHTML = '<option value="" disabled>-- Select an Active Gemini Tab --</option>';
+
+      let hasSelected = false;
+      for (const tab of tabs) {
+        if (!tab.id) continue;
+        const opt = document.createElement('option');
+        opt.value = String(tab.id);
+        const title = tab.title ? tab.title.replace(' - Google Gemini', '') : 'Gemini Web';
+        opt.textContent = `[Tab #${tab.id}] ${title.slice(0, 32)}`;
+
+        if (currentConfig.selectedTabId === tab.id) {
+          opt.selected = true;
+          hasSelected = true;
+        }
+        selectEl.appendChild(opt);
+      }
+
+      if (!hasSelected && tabs.length > 0 && tabs[0].id) {
+        // Default to first open tab
+        selectEl.value = String(tabs[0].id);
+        await updateGeminiWebConfig({
+          selectedTabId: tabs[0].id,
+          selectedTabTitle: tabs[0].title || 'Gemini Web',
+        });
+        hasSelected = true;
+      }
+
+      if (hasSelected) {
+        statusEl.textContent = currentConfig.isBusy ? 'Busy Generating' : 'Connected';
+        statusEl.className = `gemini-status-badge ${currentConfig.isBusy ? 'busy' : 'connected'}`;
+      }
+    };
+
+    selectEl.addEventListener('change', async () => {
+      const tabId = parseInt(selectEl.value, 10);
+      if (tabId) {
+        try {
+          const tab = await chrome.tabs.get(tabId);
+          await updateGeminiWebConfig({
+            selectedTabId: tabId,
+            selectedTabTitle: tab.title || 'Gemini Web',
+          });
+          statusEl.textContent = 'Connected';
+          statusEl.className = 'gemini-status-badge connected';
+        } catch {
+          await loadTabs();
+        }
+      }
+    });
+
+    btnRefresh.addEventListener('click', async () => {
+      await loadTabs();
+    });
+
+    btnOpen.addEventListener('click', async () => {
+      await chrome.tabs.create({ url: 'https://gemini.google.com/app' });
+      setTimeout(loadTabs, 1000);
+    });
+
+    await loadTabs();
   }
 }
