@@ -1,5 +1,3 @@
-import 'deep-chat';
-import type { DeepChat } from 'deep-chat';
 import type { ChatSession, ContextSnippet, ContextType, DockPosition, FloatingMode, WindowState } from '../types/session';
 import type { ExtensionSettings } from '../types/settings';
 import { addMessageToSession, deleteSession, getSession, subscribeToSession, updateSessionTitle } from '../storage/session-store';
@@ -15,7 +13,7 @@ export class FloatingWindow {
   private session: ChatSession;
   private settings: ExtensionSettings;
   private state: WindowState;
-  private deepChatEl: DeepChat | null = null;
+  private isGenerating: boolean = false;
   private pillEl: HTMLElement | null = null;
   private unsubscribeSession: (() => void) | null = null;
   private unsubscribeSettings: (() => void) | null = null;
@@ -154,8 +152,32 @@ export class FloatingWindow {
           <span class="chetty-busy-text" id="busy-text-${this.session.id}">Gemini Web is generating...</span>
         </div>
 
-        <!-- Body with Deep Chat -->
-        <div class="chetty-body" id="body-${this.session.id}"></div>
+        <!-- Messages Area -->
+        <div class="chetty-body" id="body-${this.session.id}">
+          <div class="chetty-messages" id="messages-${this.session.id}"></div>
+        </div>
+
+        <!-- Chat Input Footer -->
+        <div class="chetty-footer" id="footer-${this.session.id}">
+          <div class="chetty-input-wrapper">
+            <textarea
+              class="chetty-textarea"
+              id="input-${this.session.id}"
+              placeholder="Ask Chetty anything about this page... (Enter to send, Shift+Enter for newline)"
+              rows="1"
+            ></textarea>
+            <button class="chetty-btn-send" id="btn-send-${this.session.id}" title="Send message (Enter)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line>
+                <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </div>
+          <div class="chetty-footer-info">
+            <span class="chetty-footer-shortcut">↵ Send • Shift+↵ Newline</span>
+            <span class="chetty-footer-model-badge">✦ Gemini Web</span>
+          </div>
+        </div>
 
         <!-- Resize Handles -->
         <div class="chetty-resize-handle chetty-resize-corner" id="resize-corner-${this.session.id}"></div>
@@ -166,7 +188,7 @@ export class FloatingWindow {
 
     this.shadowRoot.appendChild(this.container);
 
-    this.mountDeepChat();
+    this.initChatUI();
     this.updateBusyState(this.settings.geminiWeb?.isBusy || false, this.settings.geminiWeb?.busySessionId);
     this.bindHeaderControls();
     this.bindDragAndResize();
@@ -212,146 +234,230 @@ export class FloatingWindow {
     return '';
   }
 
-  private mountDeepChat(): void {
-    const bodyEl = this.container.querySelector(`#body-${this.session.id}`);
-    if (!bodyEl) return;
+  private initChatUI(): void {
+    const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;
+    const btnSend = this.container.querySelector(`#btn-send-${this.session.id}`) as HTMLButtonElement;
 
-    // Create deep-chat custom element
-    const deepChat = document.createElement('deep-chat') as DeepChat;
-    this.deepChatEl = deepChat;
+    if (textarea) {
+      textarea.addEventListener('input', () => {
+        textarea.style.height = 'auto';
+        textarea.style.height = `${Math.min(120, textarea.scrollHeight)}px`;
+      });
 
-    // Configure deep-chat options & styles for Chetty
-    const isDark = this.settings.theme === 'dark';
-    deepChat.setAttribute('style', 'width: 100%; height: 100%;');
-
-    // Deep Chat theme & message styles
-    const chat = deepChat as any;
-    chat.chatStyle = {
-      backgroundColor: 'transparent',
-    };
-
-    chat.messageStyles = {
-      default: {
-        user: {
-          bubble: {
-            backgroundColor: '#6366f1',
-            color: '#ffffff',
-            borderRadius: '12px 12px 2px 12px',
-          },
-        },
-        ai: {
-          bubble: {
-            backgroundColor: isDark ? '#1e293b' : '#f1f5f9',
-            color: isDark ? '#f8fafc' : '#0f172a',
-            border: `1px solid ${isDark ? '#334155' : '#e2e8f0'}`,
-            borderRadius: '12px 12px 12px 2px',
-          },
-        },
-      },
-    };
-
-    chat.textInput = {
-      placeholder: {
-        text: 'Ask Chetty anything about this page...',
-      },
-      styles: {
-        container: {
-          backgroundColor: isDark ? '#1e293b' : '#f8fafc',
-          borderColor: isDark ? '#334155' : '#e2e8f0',
-          borderRadius: '10px',
-        },
-        text: {
-          color: isDark ? '#f8fafc' : '#0f172a',
-        },
-      },
-    };
-
-    chat.submitButtonStyles = {
-      submit: {
-        container: {
-          default: {
-            backgroundColor: '#6366f1',
-          },
-        },
-      },
-    };
-
-    // Load initial messages from session
-    const initialMessages = this.session.messages.map((m) => ({
-      role: m.role === 'model' ? 'ai' : m.role,
-      text: m.text,
-    }));
-    chat.initialMessages = initialMessages;
-
-    // Custom Request Handler routing to modular Gemini provider
-    chat.request = {
-      handler: async (body: any, signals: any) => {
-        try {
-          const userMessages = body.messages;
-          const lastUserMessage = userMessages[userMessages.length - 1];
-          const promptText = lastUserMessage?.text || '';
-
-          // 1. Gather active context based on current context mode
-          let contextSnippet: ContextSnippet | null = null;
-
-          if (this.state.contextMode === 'current_tab') {
-            contextSnippet = await extractCurrentPageContext();
-          } else if (this.state.contextMode === 'element_boundary') {
-            contextSnippet = this.state.selectedElementContext || (await extractCurrentPageContext());
-          } else if (this.state.contextMode === 'other_tab' && this.state.selectedTabId) {
-            contextSnippet = await extractRemoteTabContext(this.state.selectedTabId);
-          }
-
-          // 2. Persist user message to storage
-          await addMessageToSession(this.session.id, {
-            role: 'user',
-            text: promptText,
-            contextSnippet: contextSnippet || undefined,
-          });
-
-          // 3. Invoke modular AI provider
-          const provider = getChatProvider('gemini');
-          let accumulatedResponse = '';
-
-          await provider.streamMessage({
-            sessionId: this.session.id,
-            messages: this.session.messages,
-            currentPrompt: promptText,
-            contextSnippet,
-            model: provider.defaultModel,
-            callbacks: {
-              onChunk: (chunk) => {
-                accumulatedResponse += chunk;
-                signals.onResponse({
-                  text: accumulatedResponse,
-                  overwrite: true,
-                });
-              },
-              onError: (err) => {
-                signals.onResponse({
-                  error: err.message,
-                });
-              },
-              onFinish: async (fullText) => {
-                // Persist model response to storage
-                if (fullText) {
-                  await addMessageToSession(this.session.id, {
-                    role: 'model',
-                    text: fullText,
-                  });
-                }
-              },
-            },
-          });
-        } catch (error) {
-          signals.onResponse({
-            error: (error as Error).message || 'Failed to generate response',
-          });
+      textarea.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          this.handleSendInput();
         }
-      },
-    };
+      });
+    }
 
-    bodyEl.appendChild(deepChat);
+    if (btnSend) {
+      btnSend.addEventListener('click', () => {
+        this.handleSendInput();
+      });
+    }
+
+    this.renderMessages();
+  }
+
+  private async handleSendInput(): Promise<void> {
+    const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;
+    if (!textarea) return;
+
+    const text = textarea.value.trim();
+    if (!text || this.isGenerating || this.settings.geminiWeb?.isBusy) return;
+
+    textarea.value = '';
+    textarea.style.height = 'auto';
+    await this.sendMessage(text);
+  }
+
+  private async sendMessage(promptText: string): Promise<void> {
+    if (this.isGenerating || this.settings.geminiWeb?.isBusy) {
+      alert('Gemini Web is currently busy. Please wait for the active generation to finish.');
+      return;
+    }
+
+    this.isGenerating = true;
+
+    // 1. Gather context
+    let contextSnippet: ContextSnippet | null = null;
+    if (this.state.contextMode === 'current_tab') {
+      contextSnippet = await extractCurrentPageContext();
+    } else if (this.state.contextMode === 'element_boundary') {
+      contextSnippet = this.state.selectedElementContext || (await extractCurrentPageContext());
+    } else if (this.state.contextMode === 'other_tab' && this.state.selectedTabId) {
+      contextSnippet = await extractRemoteTabContext(this.state.selectedTabId);
+    }
+
+    // 2. Persist user message to session
+    await addMessageToSession(this.session.id, {
+      role: 'user',
+      text: promptText,
+      contextSnippet: contextSnippet || undefined,
+    });
+
+    // 3. Render updated messages
+    this.renderMessages();
+
+    // 4. Create streaming AI bubble placeholder
+    const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+    const streamingRow = document.createElement('div');
+    streamingRow.className = 'chetty-msg-row ai';
+    streamingRow.id = `streaming-${this.session.id}`;
+    streamingRow.innerHTML = `
+      <div class="chetty-msg-author">✦ Chetty</div>
+      <div class="chetty-msg-bubble">
+        <span class="chetty-streaming-content">Thinking...</span>
+        <span class="chetty-cursor"></span>
+      </div>
+    `;
+    messagesEl?.appendChild(streamingRow);
+    this.scrollToBottom();
+
+    // 5. Invoke Gemini Web Provider
+    const provider = getChatProvider('gemini');
+    let accumulatedResponse = '';
+
+    try {
+      await provider.streamMessage({
+        sessionId: this.session.id,
+        messages: this.session.messages,
+        currentPrompt: promptText,
+        contextSnippet,
+        model: provider.defaultModel,
+        callbacks: {
+          onChunk: (chunk) => {
+            accumulatedResponse += chunk;
+            const contentEl = streamingRow.querySelector('.chetty-streaming-content');
+            if (contentEl) {
+              contentEl.innerHTML = this.formatMessageText(accumulatedResponse);
+            }
+            this.scrollToBottom();
+          },
+          onError: (err) => {
+            const contentEl = streamingRow.querySelector('.chetty-streaming-content');
+            if (contentEl) {
+              contentEl.innerHTML = `<span style="color:var(--chetty-danger);">⚠️ ${this.escapeHtml(err.message)}</span>`;
+            }
+            const cursor = streamingRow.querySelector('.chetty-cursor');
+            cursor?.remove();
+            this.isGenerating = false;
+          },
+          onFinish: async (fullText) => {
+            const final = fullText || accumulatedResponse;
+            if (final) {
+              await addMessageToSession(this.session.id, {
+                role: 'model',
+                text: final,
+              });
+            }
+            this.isGenerating = false;
+            this.renderMessages();
+          },
+        },
+      });
+    } catch (err) {
+      const contentEl = streamingRow.querySelector('.chetty-streaming-content');
+      if (contentEl) {
+        contentEl.innerHTML = `<span style="color:var(--chetty-danger);">⚠️ ${(err as Error).message}</span>`;
+      }
+      const cursor = streamingRow.querySelector('.chetty-cursor');
+      cursor?.remove();
+      this.isGenerating = false;
+    }
+  }
+
+  private renderMessages(): void {
+    const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+    if (!messagesEl) return;
+
+    if (this.session.messages.length === 0) {
+      messagesEl.innerHTML = `
+        <div class="chetty-welcome-card">
+          <div class="chetty-welcome-icon">✦</div>
+          <div class="chetty-welcome-title">How can Chetty help you?</div>
+          <div class="chetty-welcome-subtitle">
+            Ask questions, summarize this webpage, or extract key insights with your signed-in Gemini session.
+          </div>
+          <div class="chetty-suggestions-grid">
+            <button class="chetty-suggestion-btn" data-prompt="Summarize this webpage into 3 concise bullet points.">
+              📝 Summarize this page
+            </button>
+            <button class="chetty-suggestion-btn" data-prompt="What are the most important takeaways from this article?">
+              🔍 Key takeaways & insights
+            </button>
+            <button class="chetty-suggestion-btn" data-prompt="Explain the core concept on this page in simple terms.">
+              💡 Explain in simple terms
+            </button>
+          </div>
+        </div>
+      `;
+
+      const btns = messagesEl.querySelectorAll('.chetty-suggestion-btn');
+      btns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const prompt = btn.getAttribute('data-prompt');
+          if (prompt) this.sendMessage(prompt);
+        });
+      });
+      return;
+    }
+
+    let html = '';
+    for (const msg of this.session.messages) {
+      const isUser = msg.role === 'user';
+      const timeStr = msg.timestamp
+        ? new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : '';
+
+      if (isUser) {
+        const contextBadge = msg.contextSnippet
+          ? `<div class="chetty-msg-context-tag">📄 Context Attached</div>`
+          : '';
+        html += `
+          <div class="chetty-msg-row user">
+            ${contextBadge}
+            <div class="chetty-msg-bubble">${this.escapeHtml(msg.text).replace(/\n/g, '<br>')}</div>
+            ${timeStr ? `<div class="chetty-msg-time">${timeStr}</div>` : ''}
+          </div>
+        `;
+      } else {
+        html += `
+          <div class="chetty-msg-row ai">
+            <div class="chetty-msg-author">✦ Chetty</div>
+            <div class="chetty-msg-bubble">${this.formatMessageText(msg.text)}</div>
+            ${timeStr ? `<div class="chetty-msg-time">${timeStr}</div>` : ''}
+          </div>
+        `;
+      }
+    }
+
+    messagesEl.innerHTML = html;
+    this.scrollToBottom();
+  }
+
+  private formatMessageText(text: string): string {
+    const escaped = this.escapeHtml(text);
+    // Code blocks: ```lang ... ```
+    const withCodeBlocks = escaped.replace(/```([a-z]*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
+      return `<pre><code>${code}</code></pre>`;
+    });
+    // Inline code: `code`
+    const withInlineCode = withCodeBlocks.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Bold: **text**
+    const withBold = withInlineCode.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Convert newlines to <br> outside <pre>
+    const parts = withBold.split(/(<pre>[\s\S]*?<\/pre>)/);
+    return parts.map((part) => (part.startsWith('<pre>') ? part : part.replace(/\n/g, '<br>'))).join('');
+  }
+
+  private scrollToBottom(): void {
+    const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+    if (messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
   }
 
   private updatePinButtonUI(btnPin: HTMLElement): void {
@@ -771,16 +877,9 @@ export class FloatingWindow {
         pillTitleEl.textContent = updatedSession.title;
       }
 
-      // Update deep-chat messages if new messages came from another tab
-      if (this.deepChatEl && updatedSession.messages.length > 0) {
-        const formatted = updatedSession.messages.map((m) => ({
-          role: m.role === 'model' ? 'ai' : m.role,
-          text: m.text,
-        }));
-        // deepChatEl setMessages method updates chat UI seamlessly
-        if (typeof (this.deepChatEl as any).setMessages === 'function') {
-          (this.deepChatEl as any).setMessages(formatted);
-        }
+      // Re-render messages if messages arrived from another tab
+      if (!this.isGenerating) {
+        this.renderMessages();
       }
     });
 
@@ -799,17 +898,32 @@ export class FloatingWindow {
   private updateBusyState(isBusy: boolean, busySessionId?: string | null): void {
     const banner = this.container.querySelector(`#busy-banner-${this.session.id}`) as HTMLElement;
     const busyText = this.container.querySelector(`#busy-text-${this.session.id}`) as HTMLElement;
-    if (!banner) return;
+    const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;
+    const btnSend = this.container.querySelector(`#btn-send-${this.session.id}`) as HTMLButtonElement;
 
-    if (isBusy) {
-      banner.style.display = 'flex';
-      if (busySessionId && busySessionId !== this.session.id) {
-        if (busyText) busyText.textContent = 'Gemini Web is generating in another window... Input locked.';
+    if (banner) {
+      if (isBusy) {
+        banner.style.display = 'flex';
+        if (busySessionId && busySessionId !== this.session.id) {
+          if (busyText) busyText.textContent = 'Gemini Web is generating in another window... Input locked.';
+        } else {
+          if (busyText) busyText.textContent = 'Generating response via Gemini Web...';
+        }
       } else {
-        if (busyText) busyText.textContent = 'Generating response via Gemini Web...';
+        banner.style.display = 'none';
       }
-    } else {
-      banner.style.display = 'none';
+    }
+
+    if (textarea && btnSend) {
+      if (isBusy) {
+        textarea.disabled = true;
+        textarea.placeholder = 'Gemini Web is generating... Please wait.';
+        btnSend.disabled = true;
+      } else {
+        textarea.disabled = false;
+        textarea.placeholder = 'Ask Chetty anything about this page... (Enter to send, Shift+Enter for newline)';
+        btnSend.disabled = false;
+      }
     }
   }
 

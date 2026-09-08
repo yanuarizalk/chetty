@@ -272,14 +272,301 @@
   min-height: 0;
 }
 
-/* Deep Chat element fills body */
-.chetty-body deep-chat {
-  width: 100% !important;
-  height: 100% !important;
-  border: none !important;
-  background: transparent !important;
-  border-radius: 0 !important;
+/* Chat Messages List */
+.chetty-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  scroll-behavior: smooth;
 }
+
+/* Custom Scrollbar for messages */
+.chetty-messages::-webkit-scrollbar {
+  width: 5px;
+}
+.chetty-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+.chetty-messages::-webkit-scrollbar-thumb {
+  background: var(--chetty-surface-active);
+  border-radius: 9999px;
+}
+
+/* Welcome Empty State */
+.chetty-welcome-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px 16px;
+  margin: auto 0;
+  gap: 10px;
+}
+
+.chetty-welcome-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #6366f1, #a855f7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: #ffffff;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+}
+
+.chetty-welcome-title {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: var(--chetty-text);
+}
+
+.chetty-welcome-subtitle {
+  font-size: 11.5px;
+  color: var(--chetty-text-muted);
+  max-width: 260px;
+  line-height: 1.4;
+}
+
+.chetty-suggestions-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  margin-top: 6px;
+}
+
+.chetty-suggestion-btn {
+  background: var(--chetty-surface);
+  border: 1px solid var(--chetty-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--chetty-text);
+  font-size: 11.5px;
+  font-family: var(--chetty-font);
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--chetty-transition);
+}
+
+.chetty-suggestion-btn:hover {
+  background: var(--chetty-surface-hover);
+  border-color: var(--chetty-accent);
+  transform: translateY(-1px);
+}
+
+/* Message Rows */
+.chetty-msg-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 88%;
+  animation: chetty-fade-in 0.18s ease-out;
+}
+
+@keyframes chetty-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.chetty-msg-row.user {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.chetty-msg-row.ai {
+  align-self: flex-start;
+  align-items: flex-start;
+}
+
+/* Context Badge in user message */
+.chetty-msg-context-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  color: #ffffff;
+  margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Bubble Styling */
+.chetty-msg-bubble {
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  word-break: break-word;
+  user-select: text;
+}
+
+.chetty-msg-row.user .chetty-msg-bubble {
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #ffffff;
+  border-bottom-right-radius: 3px;
+  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.25);
+}
+
+.chetty-msg-row.ai .chetty-msg-bubble {
+  background: var(--chetty-surface);
+  color: var(--chetty-text);
+  border: 1px solid var(--chetty-border);
+  border-bottom-left-radius: 3px;
+}
+
+.chetty-msg-author {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--chetty-accent);
+  margin-bottom: 4px;
+}
+
+.chetty-msg-time {
+  font-size: 9.5px;
+  color: var(--chetty-text-muted);
+  margin-top: 2px;
+}
+
+/* Typing Cursor for streaming */
+.chetty-cursor {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  background: var(--chetty-accent);
+  margin-left: 2px;
+  vertical-align: middle;
+  animation: chetty-blink 0.8s infinite;
+}
+
+@keyframes chetty-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Code block in AI response */
+.chetty-msg-bubble pre {
+  background: rgba(0, 0, 0, 0.25);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 6px 0;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11.5px;
+}
+
+.chetty-msg-bubble code {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11.5px;
+}
+
+/* Input Footer */
+.chetty-footer {
+  padding: 10px 12px;
+  background: var(--chetty-surface);
+  border-top: 1px solid var(--chetty-border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.chetty-input-wrapper {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  background: var(--chetty-bg);
+  border: 1px solid var(--chetty-border);
+  border-radius: 12px;
+  padding: 6px 8px 6px 12px;
+  transition: var(--chetty-transition);
+}
+
+.chetty-input-wrapper:focus-within {
+  border-color: var(--chetty-accent);
+  box-shadow: 0 0 0 2px var(--chetty-accent-light);
+}
+
+.chetty-textarea {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--chetty-text);
+  font-family: var(--chetty-font);
+  font-size: 12.5px;
+  line-height: 1.4;
+  max-height: 120px;
+  min-height: 22px;
+  padding: 2px 0;
+}
+
+.chetty-textarea::placeholder {
+  color: var(--chetty-text-muted);
+}
+
+.chetty-textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.chetty-btn-send {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--chetty-accent);
+  color: #ffffff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: var(--chetty-transition);
+}
+
+.chetty-btn-send:hover:not(:disabled) {
+  background: var(--chetty-accent-hover);
+  transform: scale(1.04);
+}
+
+.chetty-btn-send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.chetty-footer-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--chetty-text-muted);
+  padding: 0 2px;
+}
+
+.chetty-footer-model-badge {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--chetty-accent);
+  font-weight: 500;
+}
+
 
 /* Resize Handles */
 .chetty-resize-handle {
