@@ -3,7 +3,7 @@ import type { ChatMessage, ContextSnippet } from './session';
 export interface StreamCallbacks {
   onChunk: (text: string) => void;
   onError: (error: Error) => void;
-  onFinish: (fullText: string) => void;
+  onFinish: (fullText: string, cleanHtml?: string) => void;
 }
 
 export interface SendMessageOptions {

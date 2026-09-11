@@ -284,6 +284,104 @@ export class FloatingWindow {
     this.renderMessages();
   }
 
+  /**
+   * Step 5 & 10: Lock or unlock all chatbox prompt input
+   */
+  private setChatboxInputLocked(locked: boolean): void {
+    this.isGenerating = locked;
+    const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;
+    const btnSend = this.container.querySelector(`#btn-send-${this.session.id}`) as HTMLButtonElement;
+
+    if (textarea) {
+      textarea.disabled = locked;
+      textarea.placeholder = locked
+        ? 'Gemini Web is generating... Please wait.'
+        : 'Ask Chetty anything about this page... (Enter to send, Shift+Enter for newline)';
+    }
+    if (btnSend) {
+      btnSend.disabled = locked;
+    }
+  }
+
+  /**
+   * Step 2: Immediately add chat bubble from user side to DOM
+   */
+  private addImmediateUserBubble(promptText: string, contextSnippet?: ContextSnippet | null): void {
+    const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+    if (!messagesEl) return;
+
+    // Remove empty state card if present
+    const welcomeCard = messagesEl.querySelector('.chetty-welcome-card');
+    if (welcomeCard) {
+      welcomeCard.remove();
+    }
+
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const contextBadge = contextSnippet ? `<div class="chetty-msg-context-tag">📄 Context Attached</div>` : '';
+
+    const row = document.createElement('div');
+    row.className = 'chetty-msg-row user';
+    row.innerHTML = `
+      ${contextBadge}
+      <div class="chetty-msg-bubble">${this.escapeHtml(promptText).replace(/\n/g, '<br>')}</div>
+      <div class="chetty-msg-time">${timeStr}</div>
+    `;
+    messagesEl.appendChild(row);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Step 6: Add loading information to chatbox
+   */
+  private addChatboxLoadingInfo(infoText: string = 'Thinking...'): void {
+    this.removeChatboxLoadingInfo();
+    const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+    if (!messagesEl) return;
+
+    const row = document.createElement('div');
+    row.className = 'chetty-msg-row ai chetty-loading-row';
+    row.id = `loading-${this.session.id}`;
+    row.innerHTML = `
+      <div class="chetty-msg-author">✦ Chetty</div>
+      <div class="chetty-msg-bubble chetty-loading-bubble">
+        <span class="chetty-loading-sparkle">✦</span>
+        <span class="chetty-loading-text">${this.escapeHtml(infoText)}</span>
+        <span class="chetty-loading-dots">
+          <span>.</span><span>.</span><span>.</span>
+        </span>
+      </div>
+    `;
+    messagesEl.appendChild(row);
+    this.scrollToBottom();
+  }
+
+  /**
+   * Update text in existing loading bubble
+   */
+  private updateChatboxLoadingText(text: string): void {
+    const loadingRow = this.container.querySelector(`#loading-${this.session.id}`);
+    if (!loadingRow) return;
+
+    const textEl = loadingRow.querySelector('.chetty-loading-text');
+    if (textEl) {
+      textEl.textContent = text;
+    }
+  }
+
+  /**
+   * Step 8: Remove loading information from chatbox
+   */
+  private removeChatboxLoadingInfo(): void {
+    const loadingRow = this.container.querySelector(`#loading-${this.session.id}`);
+    if (loadingRow) {
+      loadingRow.remove();
+    }
+    const streamingRow = this.container.querySelector(`#streaming-${this.session.id}`);
+    if (streamingRow) {
+      streamingRow.remove();
+    }
+  }
+
   private async handleSendInput(): Promise<void> {
     const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;
     if (!textarea) return;
@@ -304,8 +402,19 @@ export class FloatingWindow {
       return;
     }
 
+    // Step 5: Immediately lock all chatbox prompt input
+    this.setChatboxInputLocked(true);
+
+    // Clear textarea
     textarea.value = '';
     textarea.style.height = 'auto';
+
+    // Step 2: Immediately add chat bubble from user side
+    this.addImmediateUserBubble(text, this.state.selectedElementContext);
+
+    // Step 6: Add loading information to chatbox
+    this.addChatboxLoadingInfo('Connecting to Gemini Web...');
+
     await this.sendMessage(text);
   }
 
@@ -316,14 +425,6 @@ export class FloatingWindow {
       contextMode: this.state.contextMode,
       isBusy: this.settings.geminiWeb?.isBusy,
     });
-
-    if (this.isGenerating || this.settings.geminiWeb?.isBusy) {
-      console.warn('[Chetty:Chatbox] ⚠️ Blocked sendMessage because isGenerating or isBusy is true');
-      alert('Gemini Web is currently busy. Please wait for the active generation to finish.');
-      return;
-    }
-
-    this.isGenerating = true;
 
     // 1. Gather context
     let contextSnippet: ContextSnippet | null = null;
@@ -348,25 +449,10 @@ export class FloatingWindow {
       contextSnippet: contextSnippet || undefined,
     });
 
-    // 3. Render updated messages
-    this.renderMessages();
+    // Update loading info
+    this.updateChatboxLoadingText('Generating response on Gemini Web...');
 
-    // 4. Create streaming AI bubble placeholder
-    const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
-    const streamingRow = document.createElement('div');
-    streamingRow.className = 'chetty-msg-row ai';
-    streamingRow.id = `streaming-${this.session.id}`;
-    streamingRow.innerHTML = `
-      <div class="chetty-msg-author">✦ Chetty</div>
-      <div class="chetty-msg-bubble">
-        <span class="chetty-streaming-content">Thinking...</span>
-        <span class="chetty-cursor"></span>
-      </div>
-    `;
-    messagesEl?.appendChild(streamingRow);
-    this.scrollToBottom();
-
-    // 5. Invoke Gemini Web Provider
+    // 3. Invoke Gemini Web Provider
     const provider = getChatProvider('gemini');
     let accumulatedResponse = '';
 
@@ -381,10 +467,26 @@ export class FloatingWindow {
         callbacks: {
           onChunk: (chunk) => {
             accumulatedResponse = chunk;
-            console.log('[Chetty:Chatbox] 🌊 onChunk received:', {
-              chunkLength: chunk.length,
-              preview: chunk.slice(-40).replace(/\n/g, ' '),
-            });
+            console.log('[Chetty:Chatbox] 🌊 onChunk received (len: ' + chunk.length + ')');
+
+            // Switch from loading spinner to streaming text preview if chunk has content
+            let streamingRow = this.container.querySelector(`#streaming-${this.session.id}`);
+            if (!streamingRow) {
+              this.removeChatboxLoadingInfo();
+              const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+              streamingRow = document.createElement('div');
+              streamingRow.className = 'chetty-msg-row ai';
+              streamingRow.id = `streaming-${this.session.id}`;
+              streamingRow.innerHTML = `
+                <div class="chetty-msg-author">✦ Chetty</div>
+                <div class="chetty-msg-bubble">
+                  <span class="chetty-streaming-content"></span>
+                  <span class="chetty-cursor"></span>
+                </div>
+              `;
+              messagesEl?.appendChild(streamingRow);
+            }
+
             const contentEl = streamingRow.querySelector('.chetty-streaming-content');
             if (contentEl) {
               contentEl.innerHTML = this.formatMessageText(accumulatedResponse);
@@ -393,40 +495,66 @@ export class FloatingWindow {
           },
           onError: (err) => {
             console.error('[Chetty:Chatbox] ❌ onError in streamMessage:', err);
-            const contentEl = streamingRow.querySelector('.chetty-streaming-content');
-            if (contentEl) {
-              contentEl.innerHTML = `<span style="color:var(--chetty-danger);">⚠️ ${this.escapeHtml(err.message)}</span>`;
-            }
-            const cursor = streamingRow.querySelector('.chetty-cursor');
-            cursor?.remove();
-            this.isGenerating = false;
+            // Step 8: Remove loading info
+            this.removeChatboxLoadingInfo();
+
+            const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+            const errRow = document.createElement('div');
+            errRow.className = 'chetty-msg-row ai';
+            errRow.innerHTML = `
+              <div class="chetty-msg-author">✦ Chetty</div>
+              <div class="chetty-msg-bubble">
+                <span style="color:var(--chetty-danger);">⚠️ ${this.escapeHtml(err.message)}</span>
+              </div>
+            `;
+            messagesEl?.appendChild(errRow);
+            this.scrollToBottom();
+
+            // Step 10: Release the lock
+            this.setChatboxInputLocked(false);
           },
-          onFinish: async (fullText) => {
-            const final = fullText || accumulatedResponse;
+          onFinish: async (fullText, cleanHtml) => {
             console.log('[Chetty:Chatbox] 🏁 onFinish received:', {
-              finalLength: final.length,
-              preview: final.slice(0, 80).replace(/\n/g, ' '),
+              fullTextLength: fullText?.length,
+              cleanHtmlLength: cleanHtml?.length,
             });
+
+            // Step 8: Remove loading information
+            this.removeChatboxLoadingInfo();
+
+            const final = fullText || accumulatedResponse;
             if (final) {
+              // Step 9: Extract & persist content of that node retaining elements without classes/ids
               await addMessageToSession(this.session.id, {
                 role: 'model',
                 text: final,
+                html: cleanHtml || undefined,
               });
             }
-            this.isGenerating = false;
+
+            // Step 10: Release the lock
+            this.setChatboxInputLocked(false);
             this.renderMessages();
           },
         },
       });
     } catch (err) {
       console.error('[Chetty:Chatbox] 💥 Exception in sendMessage:', err);
-      const contentEl = streamingRow.querySelector('.chetty-streaming-content');
-      if (contentEl) {
-        contentEl.innerHTML = `<span style="color:var(--chetty-danger);">⚠️ ${(err as Error).message}</span>`;
-      }
-      const cursor = streamingRow.querySelector('.chetty-cursor');
-      cursor?.remove();
-      this.isGenerating = false;
+      this.removeChatboxLoadingInfo();
+
+      const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+      const errRow = document.createElement('div');
+      errRow.className = 'chetty-msg-row ai';
+      errRow.innerHTML = `
+        <div class="chetty-msg-author">✦ Chetty</div>
+        <div class="chetty-msg-bubble">
+          <span style="color:var(--chetty-danger);">⚠️ ${(err as Error).message}</span>
+        </div>
+      `;
+      messagesEl?.appendChild(errRow);
+      this.scrollToBottom();
+
+      this.setChatboxInputLocked(false);
     }
   }
 
@@ -460,7 +588,11 @@ export class FloatingWindow {
       btns.forEach((btn) => {
         btn.addEventListener('click', () => {
           const prompt = btn.getAttribute('data-prompt');
-          if (prompt) this.sendMessage(prompt);
+          if (prompt) {
+            const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;
+            if (textarea) textarea.value = prompt;
+            this.handleSendInput();
+          }
         });
       });
       return;
@@ -485,10 +617,12 @@ export class FloatingWindow {
           </div>
         `;
       } else {
+        // Step 9: Use sanitized cleanHtml if available, otherwise formatted markdown text
+        const bodyContent = msg.html ? msg.html : this.formatMessageText(msg.text);
         html += `
           <div class="chetty-msg-row ai">
             <div class="chetty-msg-author">✦ Chetty</div>
-            <div class="chetty-msg-bubble">${this.formatMessageText(msg.text)}</div>
+            <div class="chetty-msg-bubble">${bodyContent}</div>
             ${timeStr ? `<div class="chetty-msg-time">${timeStr}</div>` : ''}
           </div>
         `;

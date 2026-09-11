@@ -531,6 +531,95 @@
   font-size: 11.5px;
 }
 
+.chetty-msg-bubble p {
+  margin: 4px 0;
+}
+.chetty-msg-bubble p:first-child {
+  margin-top: 0;
+}
+.chetty-msg-bubble p:last-child {
+  margin-bottom: 0;
+}
+.chetty-msg-bubble ul,
+.chetty-msg-bubble ol {
+  margin: 6px 0 6px 18px;
+  padding: 0;
+}
+.chetty-msg-bubble li {
+  margin: 3px 0;
+}
+.chetty-msg-bubble table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 11.5px;
+}
+.chetty-msg-bubble th,
+.chetty-msg-bubble td {
+  border: 1px solid var(--chetty-border);
+  padding: 5px 8px;
+  text-align: left;
+}
+.chetty-msg-bubble th {
+  background: var(--chetty-surface-hover);
+  font-weight: 600;
+}
+.chetty-msg-bubble a {
+  color: var(--chetty-accent);
+  text-decoration: underline;
+}
+.chetty-msg-bubble blockquote {
+  border-left: 3px solid var(--chetty-accent);
+  margin: 6px 0;
+  padding-left: 8px;
+  color: var(--chetty-text-muted);
+}
+
+/* Loading Row and Bubble (Step 6) */
+.chetty-loading-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 88%;
+  align-self: flex-start;
+  animation: chetty-fade-in 0.18s ease-out;
+}
+
+.chetty-loading-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border-bottom-left-radius: 3px;
+  background: var(--chetty-surface);
+  border: 1px solid var(--chetty-border);
+  color: var(--chetty-text-muted);
+  font-size: 12px;
+}
+
+.chetty-loading-sparkle {
+  color: var(--chetty-accent);
+  animation: chettySpin 2s linear infinite;
+  display: inline-block;
+  font-size: 13px;
+}
+
+.chetty-loading-dots span {
+  animation: chettyDotBlink 1.4s infinite;
+  opacity: 0;
+  font-weight: 700;
+}
+.chetty-loading-dots span:nth-child(1) { animation-delay: 0s; }
+.chetty-loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+.chetty-loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes chettyDotBlink {
+  0% { opacity: 0; }
+  50% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 /* Input Footer */
 .chetty-footer {
   padding: 10px 12px;

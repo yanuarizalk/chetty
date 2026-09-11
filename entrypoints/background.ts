@@ -1,6 +1,7 @@
 import { defineBackground } from 'wxt/utils/define-background';
 import type { ContextSnippet, TabContextSummary } from '../src/types/session';
 import { getGeminiWebConfig, updateGeminiWebConfig } from '../src/storage/settings-store';
+import { checkGeminiWebReadiness, runInPageGeminiSimulation } from '../src/providers/gemini-web-automation';
 
 export default defineBackground(() => {
   console.log('[Chetty Background] Service worker initialized.');
@@ -43,18 +44,6 @@ export default defineBackground(() => {
           'This tab was open before Chetty was installed. Please refresh this page (press F5 or Reload) to activate Chetty!'
         );
       }
-    }
-  };
-
-  // Helper to prepare Gemini tab for a new chat
-  const resetGeminiTabToNewChat = async (geminiTabId: number) => {
-    try {
-      const tab = await chrome.tabs.get(geminiTabId);
-      if (tab && tab.url && !tab.url.endsWith('/app')) {
-        await chrome.tabs.update(geminiTabId, { url: 'https://gemini.google.com/app' });
-      }
-    } catch (e) {
-      console.warn('[Chetty] Could not reset Gemini tab to new chat:', e);
     }
   };
 
@@ -208,12 +197,6 @@ export default defineBackground(() => {
             return;
           }
 
-          // Also set Gemini tab to new chat if connected
-          const geminiConfig = await getGeminiWebConfig();
-          if (geminiConfig.selectedTabId) {
-            resetGeminiTabToNewChat(geminiConfig.selectedTabId);
-          }
-
           const resp = await sendTabMessageWithFallback(activeTab, {
             type: 'CHETTY_OPEN_NEW_SESSION',
             title: message.title,
@@ -279,336 +262,32 @@ export default defineBackground(() => {
             return;
           }
 
-          // Acquire lock
+          // Step 5: Acquire lock
           console.log('[Chetty:Background] 🔒 Acquiring prompt lock for sessionId:', sessionId);
           await updateGeminiWebConfig({ isBusy: true, busySessionId: sessionId });
 
-          // Verify tab exists
-          const geminiTab = await chrome.tabs.get(tabId);
-          if (!geminiTab || !geminiTab.url || !geminiTab.url.includes('gemini.google.com')) {
-            throw new Error('Selected Gemini Web tab is no longer active. Please re-select it in Chetty popup.');
-          }
-
-          // Check if tab needs navigation to specific conversation or fresh chat
           const targetUrl = conversationId
             ? `https://gemini.google.com/app/${conversationId}`
             : 'https://gemini.google.com/app';
 
-          const currentUrl = geminiTab.url.split('?')[0].replace(/\/+$/, '');
-          const cleanTarget = targetUrl.replace(/\/+$/, '');
-
-          if (currentUrl !== cleanTarget) {
-            console.log('[Chetty:Background] 🧭 Navigating Gemini tab from', currentUrl, 'to', cleanTarget);
-            await chrome.tabs.update(tabId, { url: targetUrl });
-            // Wait for tab navigation to complete
-            await new Promise((resolve) => {
-              const onUpdated = (updatedTabId: number, info: chrome.tabs.TabChangeInfo) => {
-                if (updatedTabId === tabId && info.status === 'complete') {
-                  chrome.tabs.onUpdated.removeListener(onUpdated);
-                  resolve(true);
-                }
-              };
-              chrome.tabs.onUpdated.addListener(onUpdated);
-              setTimeout(() => {
-                chrome.tabs.onUpdated.removeListener(onUpdated);
-                resolve(true);
-              }, 10000);
-            });
-            // Allow SPA framework to mount editor
-            console.log('[Chetty:Background] ⏳ Waiting 1.5s for Gemini SPA to initialize after navigation...');
-            await new Promise((r) => setTimeout(r, 1500));
-          }
+          // Step 3 & 4.1: Check readyState, destination navigation, and textbox availability
+          await checkGeminiWebReadiness(tabId, targetUrl);
 
           if (currentToken !== activePromptToken) {
             throw new Error('Prompt was cancelled or unlocked by user.');
           }
 
-          console.log('[Chetty:Background] 💉 Injecting in-page automation script into Gemini tabId:', tabId);
-
-          // Injected In-Page Automation Script
-          const executionResults = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: async (promptText: string, sid: string) => {
-              console.log('[Chetty:GeminiWeb] 🚀 In-page automation script started for session:', sid, 'Prompt length:', promptText.length);
-              (window as any).__chettyAbortRequested = false;
-              const isAborted = () => (window as any).__chettyAbortRequested === true;
-
-              // 1. Locate Editor
-              const findEditor = (): HTMLElement | null => {
-                return document.querySelector(
-                  'rich-textarea div[contenteditable="true"], div[contenteditable="true"][role="textbox"], div[contenteditable="true"], textarea[aria-label*="prompt"], [role="combobox"]'
-                );
-              };
-
-              let editor = findEditor();
-              let attempts = 0;
-              while (!editor && attempts < 30) {
-                if (isAborted()) throw new Error('Generation cancelled by user.');
-                await new Promise((r) => setTimeout(r, 300));
-                editor = findEditor();
-                attempts++;
-                if (attempts % 5 === 0) {
-                  console.log('[Chetty:GeminiWeb] 🔍 Still waiting for editor element... (attempt ' + attempts + '/30)');
-                }
-              }
-
-              if (!editor) {
-                console.error('[Chetty:GeminiWeb] ❌ Could not locate Gemini input box on the page!');
-                throw new Error(
-                  'Could not locate Gemini input box on the page. Please ensure you are logged in to gemini.google.com.'
-                );
-              }
-              console.log('[Chetty:GeminiWeb] ✅ Input editor located:', editor.tagName, editor.className);
-
-              // 2. Snapshot current state of conversation BEFORE typing new prompt
-              const scroller = document.querySelector('infinite-scroller') || document.querySelector('main') || document.body;
-              const initialChildCount = scroller ? scroller.children.length : 0;
-
-              const priorResponseEls = Array.from(
-                document.querySelectorAll(
-                  'message-content, model-response, .model-response-text, [data-message-author-role="model"], .response-content'
-                )
-              );
-              const initialResponseCount = priorResponseEls.length;
-              console.log('[Chetty:GeminiWeb] 📸 Pre-prompt snapshot -> scroller children:', initialChildCount, '| prior model responses:', initialResponseCount);
-
-              // 3. Focus and Enter Prompt
-              console.log('[Chetty:GeminiWeb] ✍️ Typing prompt into editor...');
-              editor.focus();
-              document.execCommand('selectAll', false, undefined);
-              document.execCommand('delete', false, undefined);
-
-              const inserted = document.execCommand('insertText', false, promptText);
-              if (!inserted) {
-                if (editor.tagName.toLowerCase() === 'textarea') {
-                  (editor as HTMLTextAreaElement).value = promptText;
-                } else {
-                  editor.textContent = promptText;
-                }
-              }
-
-              editor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
-              editor.dispatchEvent(
-                new InputEvent('input', {
-                  bubbles: true,
-                  composed: true,
-                  data: promptText,
-                  inputType: 'insertText',
-                })
-              );
-              editor.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-
-              await new Promise((r) => setTimeout(r, 300));
-
-              // 4. Find and click Send button
-              const findSendBtn = (): HTMLButtonElement | null => {
-                const buttons = Array.from(document.querySelectorAll('button')) as HTMLButtonElement[];
-                return (
-                  buttons.find((b) => {
-                    const label = (
-                      b.getAttribute('aria-label') ||
-                      b.getAttribute('mattooltip') ||
-                      b.className ||
-                      ''
-                    ).toLowerCase();
-                    return label.includes('send') || label.includes('submit') || label.includes('send-button');
-                  }) || null
-                );
-              };
-
-              const sendBtn = findSendBtn();
-              if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
-                console.log('[Chetty:GeminiWeb] 🚀 Clicking Send button:', sendBtn.getAttribute('aria-label') || sendBtn.className);
-                sendBtn.click();
-              } else {
-                console.log('[Chetty:GeminiWeb] 🚀 Send button not clickable or not found, dispatching Enter key event fallback...');
-                editor.dispatchEvent(
-                  new KeyboardEvent('keydown', {
-                    key: 'Enter',
-                    code: 'Enter',
-                    keyCode: 13,
-                    which: 13,
-                    bubbles: true,
-                    composed: true,
-                  })
-                );
-              }
-
-              // Helper to check for Gemini processing/thinking indicators
-              const isGeneratingOrThinking = (): boolean => {
-                const thinking = document.querySelector(
-                  'pending-request, thinking-dots-animation, [data-test-id="thinking-dots"], .loading-indicator, mat-progress-bar, [role="progressbar"], .sparkle-animation'
-                );
-                const buttons = Array.from(document.querySelectorAll('button'));
-                const stopBtn = buttons.find((b) => {
-                  const label = (b.getAttribute('aria-label') || b.getAttribute('mattooltip') || '').toLowerCase();
-                  return label.includes('stop') || label.includes('cancel');
-                });
-                return !!(thinking || stopBtn);
-              };
-
-              // 5. Wait for generation to register (up to 10s)
-              console.log('[Chetty:GeminiWeb] ⏳ Waiting for Gemini to register the prompt and begin generating...');
-              let waitAttempts = 0;
-              while (waitAttempts < 35) {
-                if (isAborted()) throw new Error('Generation cancelled by user.');
-                await new Promise((r) => setTimeout(r, 250));
-                waitAttempts++;
-
-                const currentResponses = document.querySelectorAll(
-                  'message-content, model-response, [data-message-author-role="model"], .response-content'
-                );
-                const busy = isGeneratingOrThinking();
-                const childrenNow = scroller ? scroller.children.length : 0;
-
-                if (
-                  currentResponses.length > initialResponseCount ||
-                  busy ||
-                  childrenNow > initialChildCount
-                ) {
-                  console.log('[Chetty:GeminiWeb] ⚡ Generation registered!', {
-                    waitAttempts,
-                    newResponsesCount: currentResponses.length,
-                    initialResponseCount,
-                    isBusy: busy,
-                    scrollerChildren: childrenNow,
-                    initialChildCount,
-                  });
-                  break;
-                }
-              }
-
-              // 6. Function to locate ONLY the NEW response element created in this turn
-              const getNewResponseElement = (): HTMLElement | null => {
-                // Strategy 1: Check children of infinite-scroller added after initialChildCount
-                if (scroller && scroller.children.length > initialChildCount) {
-                  for (let i = scroller.children.length - 1; i >= initialChildCount; i--) {
-                    const child = scroller.children[i] as HTMLElement;
-                    const resp = child.querySelector(
-                      'message-content, model-response, [data-message-author-role="model"], .response-content, .markdown'
-                    ) as HTMLElement;
-                    if (resp) return resp;
-                  }
-                }
-
-                // Strategy 2: Check querySelectorAll on response elements strictly after initial count
-                const currentResponses = document.querySelectorAll(
-                  'message-content, model-response, [data-message-author-role="model"], .response-content'
-                );
-                if (currentResponses.length > initialResponseCount) {
-                  return currentResponses[currentResponses.length - 1] as HTMLElement;
-                }
-
-                // Strategy 3: Check inside or adjacent to pending-request / thinking-dots-animation
-                const pending = document.querySelector('pending-request') || document.querySelector('thinking-dots-animation');
-                if (pending) {
-                  const parent = pending.closest('model-response, [data-message-author-role="model"], .model-response, div') || pending.parentElement;
-                  const resp = parent?.querySelector('message-content, model-response, .markdown, .response-content') as HTMLElement;
-                  if (resp) return resp;
-                }
-
-                return null;
-              };
-
-              // 7. Fast-polling loop with live streaming chunks (120ms interval)
-              console.log('[Chetty:GeminiWeb] 🔄 Entering streaming & polling loop (120ms interval, max 120s timeout)...');
-              let lastText = '';
-              let stableIterations = 0;
-              let pollIteration = 0;
-              const maxTimeoutMs = 120000;
-              const startTime = Date.now();
-
-              while (Date.now() - startTime < maxTimeoutMs) {
-                if (isAborted()) {
-                  console.warn('[Chetty:GeminiWeb] 🛑 Polling loop aborted by user action!');
-                  throw new Error('Generation cancelled by user.');
-                }
-                await new Promise((r) => setTimeout(r, 120));
-                pollIteration++;
-
-                const targetEl = getNewResponseElement();
-                const busy = isGeneratingOrThinking();
-
-                if (targetEl) {
-                  const currentText = (targetEl.innerText || targetEl.textContent || '').trim();
-                  if (currentText && currentText !== lastText) {
-                    lastText = currentText;
-                    stableIterations = 0;
-                    console.log('[Chetty:GeminiWeb] 📡 Text updated (iteration ' + pollIteration + ', len: ' + currentText.length + '):', currentText.slice(-60));
-                    try {
-                      chrome.runtime.sendMessage({
-                        type: 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE',
-                        sessionId: sid,
-                        chunkText: currentText,
-                        done: false,
-                      });
-                    } catch { }
-                  } else if (lastText && !busy) {
-                    stableIterations++;
-                    console.log('[Chetty:GeminiWeb] 💤 Stable check (' + stableIterations + '/5) | busy is FALSE');
-                    // If not busy for ~600ms and text is stable, generation is complete!
-                    if (stableIterations >= 5) {
-                      console.log('[Chetty:GeminiWeb] 🏁 Generation completed naturally! (Text stable for 5 checks without busy state)');
-                      break;
-                    }
-                  } else if (pollIteration % 25 === 0) {
-                    console.log('[Chetty:GeminiWeb] ⏳ Generating in progress... elapsed: ' + (Date.now() - startTime) + 'ms | busy:', busy, '| current text len:', lastText.length);
-                  }
-                } else if (!busy && waitAttempts >= 30) {
-                  console.warn('[Chetty:GeminiWeb] ⚠️ Generation stopped (busy is false) but no response element found.');
-                  break;
-                }
-              }
-
-              // Send final stream chunk indicating completion
-              if (lastText) {
-                console.log('[Chetty:GeminiWeb] 📤 Emitting final stream chunk (done: true, length: ' + lastText.length + ')');
-                try {
-                  chrome.runtime.sendMessage({
-                    type: 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE',
-                    sessionId: sid,
-                    chunkText: lastText,
-                    done: true,
-                  });
-                } catch { }
-              }
-
-              // Extract Conversation ID from URL
-              const pathMatch = window.location.pathname.match(/\/app\/([a-zA-Z0-9_-]+)/);
-              const newConvId = pathMatch && pathMatch[1] !== 'app' ? pathMatch[1] : null;
-
-              console.log('[Chetty:GeminiWeb] ✅ In-page automation completed! Final result:', {
-                responseTextLength: lastText.length,
-                newConversationId: newConvId,
-                currentUrl: window.location.href,
-              });
-
-              return {
-                responseText: lastText,
-                newConversationId: newConvId,
-              };
-            },
-            args: [prompt, sessionId],
-          });
+          // Step 4.2-4.4, 7, 9: In-page simulation, response division tracking & HTML extraction
+          const result = await runInPageGeminiSimulation(tabId, prompt, sessionId);
 
           if (currentToken !== activePromptToken) {
             throw new Error('Prompt was cancelled or unlocked by user.');
-          }
-
-          const result = executionResults && executionResults[0]?.result;
-          console.log('[Chetty:Background] 📥 Script execution returned to background:', {
-            hasResult: !!result,
-            responseTextLength: result?.responseText?.length,
-            newConversationId: result?.newConversationId,
-          });
-
-          if (!result || !result.responseText) {
-            throw new Error('Gemini Web did not return any response text. Please check the Gemini tab.');
           }
 
           sendResponse({
             success: true,
             responseText: result.responseText,
+            cleanHtml: result.cleanHtml,
             newConversationId: result.newConversationId,
           });
         } catch (err) {

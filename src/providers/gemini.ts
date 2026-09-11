@@ -103,8 +103,8 @@ export class GeminiChatProvider implements IChatProvider {
             saveSession(session);
           }
 
-          console.log('[Chetty:Provider] ✅ onFinish callback fired with response length:', response.responseText?.length);
-          options.callbacks?.onFinish(response.responseText);
+          console.log('[Chetty:Provider] ✅ onFinish callback fired with response length:', response.responseText?.length, 'cleanHtml length:', response.cleanHtml?.length);
+          options.callbacks?.onFinish(response.responseText, response.cleanHtml);
           resolve();
         }
       );
