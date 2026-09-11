@@ -58,8 +58,69 @@ export default defineBackground(() => {
     }
   };
 
+  // Active automation state
+  let activePromptToken = 0;
+  let activeOriginTabId: number | null = null;
+  let activeGeminiTabId: number | null = null;
+  let activeSessionId: string | null = null;
+
   // Handle runtime messages
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // 0. Stream chunk from in-page Gemini automation script forwarded to origin tab
+    if (message.type === 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE') {
+      if (activeOriginTabId) {
+        chrome.tabs.sendMessage(activeOriginTabId, {
+          type: 'CHETTY_GEMINI_STREAM_CHUNK',
+          sessionId: message.sessionId,
+          chunkText: message.chunkText,
+          done: message.done || false,
+        }).catch(() => { });
+      }
+      return true;
+    }
+
+    // 0b. Force unlock Gemini state (emergency release of busy lock)
+    if (message.type === 'CHETTY_FORCE_UNLOCK_GEMINI') {
+      (async () => {
+        try {
+          activePromptToken++; // Invalidate any running prompt loop
+
+          // Signal abort in active Gemini tab
+          if (activeGeminiTabId) {
+            chrome.scripting.executeScript({
+              target: { tabId: activeGeminiTabId },
+              func: () => {
+                (window as any).__chettyAbortRequested = true;
+              },
+            }).catch(() => { });
+          }
+
+          // Notify originating tab to stop waiting
+          if (activeOriginTabId && activeSessionId) {
+            chrome.tabs.sendMessage(activeOriginTabId, {
+              type: 'CHETTY_GEMINI_STREAM_CHUNK',
+              sessionId: activeSessionId,
+              chunkText: '',
+              done: true,
+              aborted: true,
+            }).catch(() => { });
+          }
+
+          // Release storage lock
+          await updateGeminiWebConfig({ isBusy: false, busySessionId: null });
+
+          activeOriginTabId = null;
+          activeGeminiTabId = null;
+          activeSessionId = null;
+
+          sendResponse({ success: true });
+        } catch (err) {
+          sendResponse({ success: false, error: (err as Error).message });
+        }
+      })();
+      return true;
+    }
+
     // 1. Get open tabs in current window (for cross-tab context)
     if (message.type === 'CHETTY_GET_TABS') {
       (async () => {
@@ -180,12 +241,18 @@ export default defineBackground(() => {
       (async () => {
         const { tabId, sessionId, conversationId, prompt } = message;
 
+        const originTabId = sender.tab?.id || null;
+        activeOriginTabId = originTabId;
+        activeGeminiTabId = tabId;
+        activeSessionId = sessionId;
+        const currentToken = ++activePromptToken;
+
         try {
           const config = await getGeminiWebConfig();
           if (config.isBusy) {
             sendResponse({
               success: false,
-              error: 'Gemini Web is currently busy generating a response. Please wait.',
+              error: 'Gemini Web is currently busy generating a response. Please wait or click Force Unlock.',
             });
             return;
           }
@@ -227,10 +294,17 @@ export default defineBackground(() => {
             await new Promise((r) => setTimeout(r, 1500));
           }
 
+          if (currentToken !== activePromptToken) {
+            throw new Error('Prompt was cancelled or unlocked by user.');
+          }
+
           // Injected In-Page Automation Script
           const executionResults = await chrome.scripting.executeScript({
             target: { tabId },
             func: async (promptText: string, sid: string) => {
+              (window as any).__chettyAbortRequested = false;
+              const isAborted = () => (window as any).__chettyAbortRequested === true;
+
               // 1. Locate Editor
               const findEditor = (): HTMLElement | null => {
                 return document.querySelector(
@@ -241,6 +315,7 @@ export default defineBackground(() => {
               let editor = findEditor();
               let attempts = 0;
               while (!editor && attempts < 30) {
+                if (isAborted()) throw new Error('Generation cancelled by user.');
                 await new Promise((r) => setTimeout(r, 300));
                 editor = findEditor();
                 attempts++;
@@ -252,7 +327,18 @@ export default defineBackground(() => {
                 );
               }
 
-              // 2. Focus and Enter Prompt
+              // 2. Snapshot current state of conversation BEFORE typing new prompt
+              const scroller = document.querySelector('infinite-scroller') || document.querySelector('main') || document.body;
+              const initialChildCount = scroller ? scroller.children.length : 0;
+
+              const priorResponseEls = Array.from(
+                document.querySelectorAll(
+                  'message-content, model-response, .model-response-text, [data-message-author-role="model"], .response-content'
+                )
+              );
+              const initialResponseCount = priorResponseEls.length;
+
+              // 3. Focus and Enter Prompt
               editor.focus();
               document.execCommand('selectAll', false, undefined);
               document.execCommand('delete', false, undefined);
@@ -277,9 +363,9 @@ export default defineBackground(() => {
               );
               editor.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
 
-              await new Promise((r) => setTimeout(r, 400));
+              await new Promise((r) => setTimeout(r, 300));
 
-              // 3. Find and click Send button
+              // 4. Find and click Send button
               const findSendBtn = (): HTMLButtonElement | null => {
                 const buttons = Array.from(document.querySelectorAll('button')) as HTMLButtonElement[];
                 return (
@@ -312,58 +398,119 @@ export default defineBackground(() => {
                 );
               }
 
-              // 4. Wait for generation to start and monitor
-              await new Promise((r) => setTimeout(r, 1000));
-
-              const isGenerating = (): boolean => {
+              // Helper to check for Gemini processing/thinking indicators
+              const isGeneratingOrThinking = (): boolean => {
+                const thinking = document.querySelector(
+                  'pending-request, thinking-dots-animation, [data-test-id="thinking-dots"], .loading-indicator, mat-progress-bar, [role="progressbar"], .sparkle-animation'
+                );
                 const buttons = Array.from(document.querySelectorAll('button'));
                 const stopBtn = buttons.find((b) => {
                   const label = (b.getAttribute('aria-label') || b.getAttribute('mattooltip') || '').toLowerCase();
                   return label.includes('stop') || label.includes('cancel');
                 });
-                const progressBar = document.querySelector(
-                  '.loading-indicator, mat-progress-bar, [role="progressbar"], .sparkle-animation'
-                );
-                return !!(stopBtn || progressBar);
+                return !!(thinking || stopBtn);
               };
 
-              const getLatestResponseText = (): string => {
-                const candidates = document.querySelectorAll(
-                  'message-content, model-response, .model-response-text, [data-message-author-role="model"], .response-content, .markdown'
+              // 5. Wait for generation to register (up to 10s)
+              let waitAttempts = 0;
+              while (waitAttempts < 35) {
+                if (isAborted()) throw new Error('Generation cancelled by user.');
+                await new Promise((r) => setTimeout(r, 250));
+                waitAttempts++;
+
+                const currentResponses = document.querySelectorAll(
+                  'message-content, model-response, [data-message-author-role="model"], .response-content'
                 );
-                if (candidates.length === 0) return '';
-                const last = candidates[candidates.length - 1] as HTMLElement;
-                return (last.innerText || last.textContent || '').trim();
+                if (
+                  currentResponses.length > initialResponseCount ||
+                  isGeneratingOrThinking() ||
+                  (scroller && scroller.children.length > initialChildCount)
+                ) {
+                  break;
+                }
+              }
+
+              // 6. Function to locate ONLY the NEW response element created in this turn
+              const getNewResponseElement = (): HTMLElement | null => {
+                // Strategy 1: Check children of infinite-scroller added after initialChildCount
+                if (scroller && scroller.children.length > initialChildCount) {
+                  for (let i = scroller.children.length - 1; i >= initialChildCount; i--) {
+                    const child = scroller.children[i] as HTMLElement;
+                    const resp = child.querySelector(
+                      'message-content, model-response, [data-message-author-role="model"], .response-content, .markdown'
+                    ) as HTMLElement;
+                    if (resp) return resp;
+                  }
+                }
+
+                // Strategy 2: Check querySelectorAll on response elements strictly after initial count
+                const currentResponses = document.querySelectorAll(
+                  'message-content, model-response, [data-message-author-role="model"], .response-content'
+                );
+                if (currentResponses.length > initialResponseCount) {
+                  return currentResponses[currentResponses.length - 1] as HTMLElement;
+                }
+
+                // Strategy 3: Check inside or adjacent to pending-request / thinking-dots-animation
+                const pending = document.querySelector('pending-request') || document.querySelector('thinking-dots-animation');
+                if (pending) {
+                  const parent = pending.closest('model-response, [data-message-author-role="model"], .model-response, div') || pending.parentElement;
+                  const resp = parent?.querySelector('message-content, model-response, .markdown, .response-content') as HTMLElement;
+                  if (resp) return resp;
+                }
+
+                return null;
               };
 
+              // 7. Fast-polling loop with live streaming chunks (120ms interval)
               let lastText = '';
-              let stableCount = 0;
+              let stableIterations = 0;
               const maxTimeoutMs = 120000;
               const startTime = Date.now();
 
               while (Date.now() - startTime < maxTimeoutMs) {
-                await new Promise((r) => setTimeout(r, 500));
-                const currentText = getLatestResponseText();
-                const busy = isGenerating();
+                if (isAborted()) throw new Error('Generation cancelled by user.');
+                await new Promise((r) => setTimeout(r, 120));
 
-                if (currentText && currentText !== lastText) {
-                  lastText = currentText;
-                  stableCount = 0;
-                  try {
-                    chrome.runtime.sendMessage({
-                      type: 'CHETTY_GEMINI_STREAM_CHUNK',
-                      sessionId: sid,
-                      chunkText: currentText,
-                      done: false,
-                    });
-                  } catch {}
-                } else if (lastText && !busy) {
-                  stableCount++;
-                  if (stableCount >= 3) {
-                    // Response complete and stable
-                    break;
+                const targetEl = getNewResponseElement();
+                const busy = isGeneratingOrThinking();
+
+                if (targetEl) {
+                  const currentText = (targetEl.innerText || targetEl.textContent || '').trim();
+                  if (currentText && currentText !== lastText) {
+                    lastText = currentText;
+                    stableIterations = 0;
+                    try {
+                      chrome.runtime.sendMessage({
+                        type: 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE',
+                        sessionId: sid,
+                        chunkText: currentText,
+                        done: false,
+                      });
+                    } catch { }
+                  } else if (lastText && !busy) {
+                    stableIterations++;
+                    // If not busy for ~600ms and text is stable, generation is complete!
+                    if (stableIterations >= 5) {
+                      break;
+                    }
                   }
+                } else if (!busy && waitAttempts >= 30) {
+                  // If thinking stopped and no target element found after ample wait
+                  break;
                 }
+              }
+
+              // Send final stream chunk indicating completion
+              if (lastText) {
+                try {
+                  chrome.runtime.sendMessage({
+                    type: 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE',
+                    sessionId: sid,
+                    chunkText: lastText,
+                    done: true,
+                  });
+                } catch { }
               }
 
               // Extract Conversation ID from URL
@@ -377,6 +524,10 @@ export default defineBackground(() => {
             },
             args: [prompt, sessionId],
           });
+
+          if (currentToken !== activePromptToken) {
+            throw new Error('Prompt was cancelled or unlocked by user.');
+          }
 
           const result = executionResults && executionResults[0]?.result;
           if (!result || !result.responseText) {
@@ -395,8 +546,13 @@ export default defineBackground(() => {
             error: (err as Error).message || 'Failed to automate prompt on Gemini Web',
           });
         } finally {
-          // Release lock
-          await updateGeminiWebConfig({ isBusy: false, busySessionId: null });
+          // Release lock only if still the active prompt token
+          if (currentToken === activePromptToken) {
+            await updateGeminiWebConfig({ isBusy: false, busySessionId: null });
+            activeOriginTabId = null;
+            activeGeminiTabId = null;
+            activeSessionId = null;
+          }
         }
       })();
       return true;

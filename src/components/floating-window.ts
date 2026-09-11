@@ -148,8 +148,11 @@ export class FloatingWindow {
 
         <!-- Busy Status Banner -->
         <div class="chetty-busy-banner" id="busy-banner-${this.session.id}">
-          <span class="chetty-busy-spinner">⏳</span>
-          <span class="chetty-busy-text" id="busy-text-${this.session.id}">Gemini Web is generating...</span>
+          <div class="chetty-busy-banner-content">
+            <span class="chetty-busy-spinner">⏳</span>
+            <span class="chetty-busy-text" id="busy-text-${this.session.id}">Gemini Web is generating...</span>
+          </div>
+          <button class="chetty-btn-busy-unlock" id="btn-busy-unlock-${this.session.id}" title="Force unlock if prompt is stuck">Unlock</button>
         </div>
 
         <!-- Messages Area -->
@@ -258,6 +261,23 @@ export class FloatingWindow {
       });
     }
 
+    // Force unlock button on busy banner
+    const btnUnlock = this.container.querySelector(`#btn-busy-unlock-${this.session.id}`);
+    btnUnlock?.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const confirmed = confirm(
+        'Force unlock Gemini Web session?\n\n' +
+        '⚠️ Caution: Any in-progress prompt request will be released (not listened to) and will need to be retried manually.'
+      );
+      if (confirmed) {
+        try {
+          await chrome.runtime.sendMessage({ type: 'CHETTY_FORCE_UNLOCK_GEMINI' });
+        } catch (err) {
+          console.error('[Chetty] Failed to force unlock:', err);
+        }
+      }
+    });
+
     this.renderMessages();
   }
 
@@ -329,7 +349,7 @@ export class FloatingWindow {
         model: provider.defaultModel,
         callbacks: {
           onChunk: (chunk) => {
-            accumulatedResponse += chunk;
+            accumulatedResponse = chunk;
             const contentEl = streamingRow.querySelector('.chetty-streaming-content');
             if (contentEl) {
               contentEl.innerHTML = this.formatMessageText(accumulatedResponse);

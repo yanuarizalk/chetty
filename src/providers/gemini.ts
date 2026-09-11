@@ -102,6 +102,13 @@ export class GeminiChatProvider implements IChatProvider {
           message.type === 'CHETTY_GEMINI_STREAM_CHUNK' &&
           message.sessionId === options.sessionId
         ) {
+          if (message.aborted) {
+            chrome.runtime.onMessage.removeListener(chunkListener);
+            const err = new Error('Prompt was cancelled or force unlocked.');
+            options.callbacks?.onError(err);
+            reject(err);
+            return;
+          }
           options.callbacks?.onChunk(message.chunkText);
           if (message.done) {
             chrome.runtime.onMessage.removeListener(chunkListener);
@@ -144,6 +151,22 @@ export class GeminiChatProvider implements IChatProvider {
         <div class="gemini-web-help" id="gemini-tab-help">
           Chetty automates this tab to generate responses with your signed-in Gemini session.
         </div>
+
+        <!-- Emergency Force Unlock Option -->
+        <div class="gemini-unlock-section" id="gemini-unlock-section">
+          <div class="gemini-unlock-header">
+            <div class="gemini-unlock-title-wrap">
+              <span class="gemini-unlock-title">Prompt Lock State</span>
+              <span class="gemini-lock-indicator" id="gemini-lock-indicator">Idle</span>
+            </div>
+            <button id="btn-force-unlock-gemini" class="btn-action-unlock" title="Force release the prompt lock">
+              🔓 Force Unlock
+            </button>
+          </div>
+          <div class="gemini-unlock-caution">
+            ⚠️ <strong>Caution:</strong> Unlocking releases the lock and stops listening to any stuck in-flight prompt. The pending prompt will need to be retried manually.
+          </div>
+        </div>
       </div>
     `;
 
@@ -151,6 +174,8 @@ export class GeminiChatProvider implements IChatProvider {
     const statusEl = container.querySelector('#gemini-tab-status') as HTMLElement;
     const btnRefresh = container.querySelector('#btn-refresh-gemini-tabs') as HTMLButtonElement;
     const btnOpen = container.querySelector('#btn-open-gemini-web') as HTMLButtonElement;
+    const lockIndicator = container.querySelector('#gemini-lock-indicator') as HTMLElement;
+    const btnForceUnlock = container.querySelector('#btn-force-unlock-gemini') as HTMLButtonElement;
 
     const loadTabs = async () => {
       selectEl.innerHTML = '<option value="" disabled selected>Searching...</option>';
@@ -173,39 +198,57 @@ export class GeminiChatProvider implements IChatProvider {
         statusEl.textContent = 'Offline';
         statusEl.className = 'gemini-status-badge offline';
         await updateGeminiWebConfig({ selectedTabId: null, selectedTabTitle: null });
-        return;
-      }
+      } else {
+        selectEl.innerHTML = '<option value="" disabled>-- Select an Active Gemini Tab --</option>';
 
-      selectEl.innerHTML = '<option value="" disabled>-- Select an Active Gemini Tab --</option>';
+        let hasSelected = false;
+        for (const tab of tabs) {
+          if (!tab.id) continue;
+          const opt = document.createElement('option');
+          opt.value = String(tab.id);
+          const title = tab.title ? tab.title.replace(' - Google Gemini', '') : 'Gemini Web';
+          opt.textContent = `[Tab #${tab.id}] ${title.slice(0, 32)}`;
 
-      let hasSelected = false;
-      for (const tab of tabs) {
-        if (!tab.id) continue;
-        const opt = document.createElement('option');
-        opt.value = String(tab.id);
-        const title = tab.title ? tab.title.replace(' - Google Gemini', '') : 'Gemini Web';
-        opt.textContent = `[Tab #${tab.id}] ${title.slice(0, 32)}`;
+          if (currentConfig.selectedTabId === tab.id) {
+            opt.selected = true;
+            hasSelected = true;
+          }
+          selectEl.appendChild(opt);
+        }
 
-        if (currentConfig.selectedTabId === tab.id) {
-          opt.selected = true;
+        if (!hasSelected && tabs.length > 0 && tabs[0].id) {
+          // Default to first open tab
+          selectEl.value = String(tabs[0].id);
+          await updateGeminiWebConfig({
+            selectedTabId: tabs[0].id,
+            selectedTabTitle: tabs[0].title || 'Gemini Web',
+          });
           hasSelected = true;
         }
-        selectEl.appendChild(opt);
+
+        if (hasSelected) {
+          statusEl.textContent = currentConfig.isBusy ? 'Busy Generating' : 'Connected';
+          statusEl.className = `gemini-status-badge ${currentConfig.isBusy ? 'busy' : 'connected'}`;
+        }
       }
 
-      if (!hasSelected && tabs.length > 0 && tabs[0].id) {
-        // Default to first open tab
-        selectEl.value = String(tabs[0].id);
-        await updateGeminiWebConfig({
-          selectedTabId: tabs[0].id,
-          selectedTabTitle: tabs[0].title || 'Gemini Web',
-        });
-        hasSelected = true;
-      }
-
-      if (hasSelected) {
-        statusEl.textContent = currentConfig.isBusy ? 'Busy Generating' : 'Connected';
-        statusEl.className = `gemini-status-badge ${currentConfig.isBusy ? 'busy' : 'connected'}`;
+      // Update Lock indicator state
+      if (currentConfig.isBusy) {
+        if (lockIndicator) {
+          lockIndicator.textContent = 'Locked (Busy)';
+          lockIndicator.className = 'gemini-lock-indicator busy';
+        }
+        if (btnForceUnlock) {
+          btnForceUnlock.classList.add('highlight-busy');
+        }
+      } else {
+        if (lockIndicator) {
+          lockIndicator.textContent = 'Unlocked (Idle)';
+          lockIndicator.className = 'gemini-lock-indicator idle';
+        }
+        if (btnForceUnlock) {
+          btnForceUnlock.classList.remove('highlight-busy');
+        }
       }
     };
 
@@ -233,6 +276,30 @@ export class GeminiChatProvider implements IChatProvider {
     btnOpen.addEventListener('click', async () => {
       await chrome.tabs.create({ url: 'https://gemini.google.com/app' });
       setTimeout(loadTabs, 1000);
+    });
+
+    btnForceUnlock?.addEventListener('click', async () => {
+      const confirmed = confirm(
+        'Force unlock Gemini Web session?\n\n' +
+        '⚠️ Caution: Any in-progress prompt request will be released (not listened to) and will need to be retried manually by you.'
+      );
+      if (!confirmed) return;
+
+      btnForceUnlock.disabled = true;
+      btnForceUnlock.textContent = 'Unlocking...';
+
+      try {
+        const resp = await chrome.runtime.sendMessage({ type: 'CHETTY_FORCE_UNLOCK_GEMINI' });
+        if (resp && !resp.success && resp.error) {
+          throw new Error(resp.error);
+        }
+        await loadTabs();
+      } catch (err) {
+        alert('Failed to unlock: ' + (err as Error).message);
+      } finally {
+        btnForceUnlock.disabled = false;
+        btnForceUnlock.textContent = '🔓 Force Unlock';
+      }
     });
 
     await loadTabs();

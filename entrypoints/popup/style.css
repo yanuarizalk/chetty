@@ -242,6 +242,101 @@ body {
   line-height: 1.35;
 }
 
+/* Gemini Unlock Section */
+.gemini-unlock-section {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gemini-unlock-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gemini-unlock-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.gemini-unlock-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.gemini-lock-indicator {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: var(--bg-surface-hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.gemini-lock-indicator.busy {
+  background: rgba(245, 158, 11, 0.15);
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
+.gemini-lock-indicator.idle {
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--success);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.btn-action-unlock {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.btn-action-unlock:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--danger);
+}
+
+.btn-action-unlock.highlight-busy {
+  background: var(--danger);
+  color: #ffffff;
+  border-color: var(--danger);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+  animation: pulseUnlock 1.8s infinite;
+}
+
+@keyframes pulseUnlock {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+.gemini-unlock-caution {
+  font-size: 10px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+  background: rgba(245, 158, 11, 0.08);
+  border-left: 3px solid #f59e0b;
+  padding: 5px 8px;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
 .btn-secondary {
   background: var(--bg-surface-hover);
   color: var(--text-primary);
