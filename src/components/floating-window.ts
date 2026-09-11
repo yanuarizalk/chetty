@@ -265,15 +265,18 @@ export class FloatingWindow {
     const btnUnlock = this.container.querySelector(`#btn-busy-unlock-${this.session.id}`);
     btnUnlock?.addEventListener('click', async (e) => {
       e.stopPropagation();
+      console.log('[Chetty:Chatbox] 🔓 Force unlock button clicked in busy banner for session:', this.session.id);
       const confirmed = confirm(
         'Force unlock Gemini Web session?\n\n' +
         '⚠️ Caution: Any in-progress prompt request will be released (not listened to) and will need to be retried manually.'
       );
       if (confirmed) {
         try {
+          console.log('[Chetty:Chatbox] 🔓 Sending CHETTY_FORCE_UNLOCK_GEMINI message to background...');
           await chrome.runtime.sendMessage({ type: 'CHETTY_FORCE_UNLOCK_GEMINI' });
+          console.log('[Chetty:Chatbox] 🔓 CHETTY_FORCE_UNLOCK_GEMINI message sent successfully');
         } catch (err) {
-          console.error('[Chetty] Failed to force unlock:', err);
+          console.error('[Chetty:Chatbox] ❌ Failed to force unlock:', err);
         }
       }
     });
@@ -286,7 +289,20 @@ export class FloatingWindow {
     if (!textarea) return;
 
     const text = textarea.value.trim();
-    if (!text || this.isGenerating || this.settings.geminiWeb?.isBusy) return;
+    console.log('[Chetty:Chatbox] 💬 handleSendInput triggered:', {
+      sessionId: this.session.id,
+      textLength: text.length,
+      isGenerating: this.isGenerating,
+      isBusy: this.settings.geminiWeb?.isBusy,
+      busySessionId: this.settings.geminiWeb?.busySessionId,
+    });
+
+    if (!text || this.isGenerating || this.settings.geminiWeb?.isBusy) {
+      if (!text) console.log('[Chetty:Chatbox] 💬 Empty input text ignored');
+      if (this.isGenerating) console.warn('[Chetty:Chatbox] ⚠️ Ignored send: already generating');
+      if (this.settings.geminiWeb?.isBusy) console.warn('[Chetty:Chatbox] ⚠️ Ignored send: Gemini Web is busy');
+      return;
+    }
 
     textarea.value = '';
     textarea.style.height = 'auto';
@@ -294,7 +310,15 @@ export class FloatingWindow {
   }
 
   private async sendMessage(promptText: string): Promise<void> {
+    console.log('[Chetty:Chatbox] 🚀 sendMessage started:', {
+      sessionId: this.session.id,
+      promptPreview: promptText.slice(0, 60),
+      contextMode: this.state.contextMode,
+      isBusy: this.settings.geminiWeb?.isBusy,
+    });
+
     if (this.isGenerating || this.settings.geminiWeb?.isBusy) {
+      console.warn('[Chetty:Chatbox] ⚠️ Blocked sendMessage because isGenerating or isBusy is true');
       alert('Gemini Web is currently busy. Please wait for the active generation to finish.');
       return;
     }
@@ -310,8 +334,14 @@ export class FloatingWindow {
     } else if (this.state.contextMode === 'other_tab' && this.state.selectedTabId) {
       contextSnippet = await extractRemoteTabContext(this.state.selectedTabId);
     }
+    console.log('[Chetty:Chatbox] 📄 Context gathered:', {
+      hasContext: !!contextSnippet,
+      selector: contextSnippet?.selector,
+      contentLength: contextSnippet?.content?.length,
+    });
 
     // 2. Persist user message to session
+    console.log('[Chetty:Chatbox] 💾 Adding user message to session...');
     await addMessageToSession(this.session.id, {
       role: 'user',
       text: promptText,
@@ -341,6 +371,7 @@ export class FloatingWindow {
     let accumulatedResponse = '';
 
     try {
+      console.log('[Chetty:Chatbox] 📡 Invoking provider.streamMessage...');
       await provider.streamMessage({
         sessionId: this.session.id,
         messages: this.session.messages,
@@ -350,6 +381,10 @@ export class FloatingWindow {
         callbacks: {
           onChunk: (chunk) => {
             accumulatedResponse = chunk;
+            console.log('[Chetty:Chatbox] 🌊 onChunk received:', {
+              chunkLength: chunk.length,
+              preview: chunk.slice(-40).replace(/\n/g, ' '),
+            });
             const contentEl = streamingRow.querySelector('.chetty-streaming-content');
             if (contentEl) {
               contentEl.innerHTML = this.formatMessageText(accumulatedResponse);
@@ -357,6 +392,7 @@ export class FloatingWindow {
             this.scrollToBottom();
           },
           onError: (err) => {
+            console.error('[Chetty:Chatbox] ❌ onError in streamMessage:', err);
             const contentEl = streamingRow.querySelector('.chetty-streaming-content');
             if (contentEl) {
               contentEl.innerHTML = `<span style="color:var(--chetty-danger);">⚠️ ${this.escapeHtml(err.message)}</span>`;
@@ -367,6 +403,10 @@ export class FloatingWindow {
           },
           onFinish: async (fullText) => {
             const final = fullText || accumulatedResponse;
+            console.log('[Chetty:Chatbox] 🏁 onFinish received:', {
+              finalLength: final.length,
+              preview: final.slice(0, 80).replace(/\n/g, ' '),
+            });
             if (final) {
               await addMessageToSession(this.session.id, {
                 role: 'model',
@@ -379,6 +419,7 @@ export class FloatingWindow {
         },
       });
     } catch (err) {
+      console.error('[Chetty:Chatbox] 💥 Exception in sendMessage:', err);
       const contentEl = streamingRow.querySelector('.chetty-streaming-content');
       if (contentEl) {
         contentEl.innerHTML = `<span style="color:var(--chetty-danger);">⚠️ ${(err as Error).message}</span>`;
@@ -880,11 +921,17 @@ export class FloatingWindow {
     // 1. Cross-tab & Multi-window session sync
     this.unsubscribeSession = subscribeToSession(this.session.id, (updatedSession) => {
       if (!updatedSession) {
+        console.log('[Chetty:Chatbox] 🗑️ Session was deleted across tabs, closing window:', this.session.id);
         // Session was deleted across tabs! Close this window immediately.
         this.destroy();
         this.onClose();
         return;
       }
+      console.log('[Chetty:Chatbox] 🔄 Session updated from storage/sync:', {
+        sessionId: this.session.id,
+        title: updatedSession.title,
+        messageCount: updatedSession.messages.length,
+      });
       this.session = updatedSession;
       // Update header title
       const titleEl = this.container.querySelector('.chetty-title');
@@ -905,6 +952,12 @@ export class FloatingWindow {
 
     // 2. Settings sync (theme, opacity, geminiWeb busy state)
     this.unsubscribeSettings = subscribeSettings((newSettings) => {
+      console.log('[Chetty:Chatbox] ⚙️ Settings updated from storage:', {
+        theme: newSettings.theme,
+        opacity: newSettings.opacity,
+        isBusy: newSettings.geminiWeb?.isBusy,
+        busySessionId: newSettings.geminiWeb?.busySessionId,
+      });
       this.settings = newSettings;
       this.container.className = `chetty-window-wrapper chetty-theme-${newSettings.theme}`;
       const windowEl = this.container.querySelector('.chetty-window') as HTMLElement;
@@ -916,6 +969,12 @@ export class FloatingWindow {
   }
 
   private updateBusyState(isBusy: boolean, busySessionId?: string | null): void {
+    console.log('[Chetty:Chatbox] 🚦 updateBusyState invoked:', {
+      isBusy,
+      busySessionId,
+      windowSessionId: this.session.id,
+      matchesCurrentSession: busySessionId === this.session.id,
+    });
     const banner = this.container.querySelector(`#busy-banner-${this.session.id}`) as HTMLElement;
     const busyText = this.container.querySelector(`#busy-text-${this.session.id}`) as HTMLElement;
     const textarea = this.container.querySelector(`#input-${this.session.id}`) as HTMLTextAreaElement;

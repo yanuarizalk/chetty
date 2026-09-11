@@ -61,6 +61,14 @@ export class GeminiChatProvider implements IChatProvider {
     const contextPrefix = formatContextForPrompt(options.contextSnippet);
     const fullPrompt = contextPrefix + options.currentPrompt;
 
+    console.log('[Chetty:Provider] 🚀 streamMessage started:', {
+      sessionId: options.sessionId,
+      selectedTabId: config.selectedTabId,
+      geminiConversationId: session?.geminiConversationId || null,
+      contextLength: contextPrefix.length,
+      promptLength: options.currentPrompt.length,
+    });
+
     // Send prompt through background automation broker
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
@@ -72,8 +80,10 @@ export class GeminiChatProvider implements IChatProvider {
           prompt: fullPrompt,
         },
         (response) => {
+          console.log('[Chetty:Provider] 📥 Background automation response received:', response);
           if (chrome.runtime.lastError) {
             const err = new Error(chrome.runtime.lastError.message);
+            console.error('[Chetty:Provider] ❌ Runtime error from background:', err);
             options.callbacks?.onError(err);
             reject(err);
             return;
@@ -81,16 +91,19 @@ export class GeminiChatProvider implements IChatProvider {
 
           if (!response || !response.success) {
             const err = new Error(response?.error || 'Failed to automate Gemini Web prompt');
+            console.error('[Chetty:Provider] ❌ Provider automation failed:', err);
             options.callbacks?.onError(err);
             reject(err);
             return;
           }
 
           if (response.newConversationId && session && !session.geminiConversationId) {
+            console.log('[Chetty:Provider] 🔗 New Gemini conversation mapped to session:', response.newConversationId);
             session.geminiConversationId = response.newConversationId;
             saveSession(session);
           }
 
+          console.log('[Chetty:Provider] ✅ onFinish callback fired with response length:', response.responseText?.length);
           options.callbacks?.onFinish(response.responseText);
           resolve();
         }
@@ -102,15 +115,23 @@ export class GeminiChatProvider implements IChatProvider {
           message.type === 'CHETTY_GEMINI_STREAM_CHUNK' &&
           message.sessionId === options.sessionId
         ) {
+          console.log('[Chetty:Provider] 🌊 CHETTY_GEMINI_STREAM_CHUNK received in provider:', {
+            sessionId: message.sessionId,
+            chunkLength: message.chunkText?.length,
+            done: message.done,
+            aborted: message.aborted,
+          });
           if (message.aborted) {
             chrome.runtime.onMessage.removeListener(chunkListener);
             const err = new Error('Prompt was cancelled or force unlocked.');
+            console.warn('[Chetty:Provider] 🛑 Generation aborted via message listener.');
             options.callbacks?.onError(err);
             reject(err);
             return;
           }
           options.callbacks?.onChunk(message.chunkText);
           if (message.done) {
+            console.log('[Chetty:Provider] 🏁 Stream complete chunk received. Removing listener.');
             chrome.runtime.onMessage.removeListener(chunkListener);
           }
         }
@@ -254,6 +275,7 @@ export class GeminiChatProvider implements IChatProvider {
 
     selectEl.addEventListener('change', async () => {
       const tabId = parseInt(selectEl.value, 10);
+      console.log('[Chetty:Provider] 🖱️ User selected Gemini tabId:', tabId);
       if (tabId) {
         try {
           const tab = await chrome.tabs.get(tabId);
@@ -263,22 +285,27 @@ export class GeminiChatProvider implements IChatProvider {
           });
           statusEl.textContent = 'Connected';
           statusEl.className = 'gemini-status-badge connected';
-        } catch {
+          console.log('[Chetty:Provider] ✅ Updated selectedTabId:', tabId, tab.title);
+        } catch (e) {
+          console.warn('[Chetty:Provider] ⚠️ Selected tab no longer valid, reloading...', e);
           await loadTabs();
         }
       }
     });
 
     btnRefresh.addEventListener('click', async () => {
+      console.log('[Chetty:Provider] 🔄 Refreshing Gemini tabs list...');
       await loadTabs();
     });
 
     btnOpen.addEventListener('click', async () => {
+      console.log('[Chetty:Provider] 🌐 Opening new gemini.google.com tab...');
       await chrome.tabs.create({ url: 'https://gemini.google.com/app' });
       setTimeout(loadTabs, 1000);
     });
 
     btnForceUnlock?.addEventListener('click', async () => {
+      console.log('[Chetty:Provider] 🔓 User clicked Force Unlock button in popup settings.');
       const confirmed = confirm(
         'Force unlock Gemini Web session?\n\n' +
         '⚠️ Caution: Any in-progress prompt request will be released (not listened to) and will need to be retried manually by you.'
@@ -290,11 +317,13 @@ export class GeminiChatProvider implements IChatProvider {
 
       try {
         const resp = await chrome.runtime.sendMessage({ type: 'CHETTY_FORCE_UNLOCK_GEMINI' });
+        console.log('[Chetty:Provider] 📥 Force unlock response:', resp);
         if (resp && !resp.success && resp.error) {
           throw new Error(resp.error);
         }
         await loadTabs();
       } catch (err) {
+        console.error('[Chetty:Provider] ❌ Force unlock failed:', err);
         alert('Failed to unlock: ' + (err as Error).message);
       } finally {
         btnForceUnlock.disabled = false;

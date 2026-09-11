@@ -68,6 +68,12 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // 0. Stream chunk from in-page Gemini automation script forwarded to origin tab
     if (message.type === 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE') {
+      console.log('[Chetty:Background] 📡 Stream chunk received from Gemini Web tab:', {
+        originTabId: activeOriginTabId,
+        sessionId: message.sessionId,
+        chunkLength: message.chunkText?.length,
+        done: message.done || false,
+      });
       if (activeOriginTabId) {
         chrome.tabs.sendMessage(activeOriginTabId, {
           type: 'CHETTY_GEMINI_STREAM_CHUNK',
@@ -81,15 +87,18 @@ export default defineBackground(() => {
 
     // 0b. Force unlock Gemini state (emergency release of busy lock)
     if (message.type === 'CHETTY_FORCE_UNLOCK_GEMINI') {
+      console.log('[Chetty:Background] 🔓 CHETTY_FORCE_UNLOCK_GEMINI requested! Inactive token:', activePromptToken);
       (async () => {
         try {
           activePromptToken++; // Invalidate any running prompt loop
 
           // Signal abort in active Gemini tab
           if (activeGeminiTabId) {
+            console.log('[Chetty:Background] 🛑 Signaling abort to Gemini tabId:', activeGeminiTabId);
             chrome.scripting.executeScript({
               target: { tabId: activeGeminiTabId },
               func: () => {
+                console.log('[Chetty:GeminiWeb] 🛑 Abort requested via __chettyAbortRequested');
                 (window as any).__chettyAbortRequested = true;
               },
             }).catch(() => { });
@@ -97,6 +106,7 @@ export default defineBackground(() => {
 
           // Notify originating tab to stop waiting
           if (activeOriginTabId && activeSessionId) {
+            console.log('[Chetty:Background] 📣 Notifying origin tabId of abort:', activeOriginTabId);
             chrome.tabs.sendMessage(activeOriginTabId, {
               type: 'CHETTY_GEMINI_STREAM_CHUNK',
               sessionId: activeSessionId,
@@ -108,6 +118,7 @@ export default defineBackground(() => {
 
           // Release storage lock
           await updateGeminiWebConfig({ isBusy: false, busySessionId: null });
+          console.log('[Chetty:Background] ✅ Released busy lock in storage.');
 
           activeOriginTabId = null;
           activeGeminiTabId = null;
@@ -115,6 +126,7 @@ export default defineBackground(() => {
 
           sendResponse({ success: true });
         } catch (err) {
+          console.error('[Chetty:Background] ❌ Error during force unlock:', err);
           sendResponse({ success: false, error: (err as Error).message });
         }
       })();
@@ -247,9 +259,19 @@ export default defineBackground(() => {
         activeSessionId = sessionId;
         const currentToken = ++activePromptToken;
 
+        console.log('[Chetty:Background] 📨 CHETTY_GEMINI_AUTOMATE_PROMPT received:', {
+          tabId,
+          sessionId,
+          conversationId,
+          promptLength: prompt?.length,
+          originTabId,
+          token: currentToken,
+        });
+
         try {
           const config = await getGeminiWebConfig();
           if (config.isBusy) {
+            console.warn('[Chetty:Background] ⚠️ Cannot run prompt: Gemini Web is already busy! (busySessionId:', config.busySessionId, ')');
             sendResponse({
               success: false,
               error: 'Gemini Web is currently busy generating a response. Please wait or click Force Unlock.',
@@ -258,6 +280,7 @@ export default defineBackground(() => {
           }
 
           // Acquire lock
+          console.log('[Chetty:Background] 🔒 Acquiring prompt lock for sessionId:', sessionId);
           await updateGeminiWebConfig({ isBusy: true, busySessionId: sessionId });
 
           // Verify tab exists
@@ -275,6 +298,7 @@ export default defineBackground(() => {
           const cleanTarget = targetUrl.replace(/\/+$/, '');
 
           if (currentUrl !== cleanTarget) {
+            console.log('[Chetty:Background] 🧭 Navigating Gemini tab from', currentUrl, 'to', cleanTarget);
             await chrome.tabs.update(tabId, { url: targetUrl });
             // Wait for tab navigation to complete
             await new Promise((resolve) => {
@@ -291,6 +315,7 @@ export default defineBackground(() => {
               }, 10000);
             });
             // Allow SPA framework to mount editor
+            console.log('[Chetty:Background] ⏳ Waiting 1.5s for Gemini SPA to initialize after navigation...');
             await new Promise((r) => setTimeout(r, 1500));
           }
 
@@ -298,10 +323,13 @@ export default defineBackground(() => {
             throw new Error('Prompt was cancelled or unlocked by user.');
           }
 
+          console.log('[Chetty:Background] 💉 Injecting in-page automation script into Gemini tabId:', tabId);
+
           // Injected In-Page Automation Script
           const executionResults = await chrome.scripting.executeScript({
             target: { tabId },
             func: async (promptText: string, sid: string) => {
+              console.log('[Chetty:GeminiWeb] 🚀 In-page automation script started for session:', sid, 'Prompt length:', promptText.length);
               (window as any).__chettyAbortRequested = false;
               const isAborted = () => (window as any).__chettyAbortRequested === true;
 
@@ -319,13 +347,18 @@ export default defineBackground(() => {
                 await new Promise((r) => setTimeout(r, 300));
                 editor = findEditor();
                 attempts++;
+                if (attempts % 5 === 0) {
+                  console.log('[Chetty:GeminiWeb] 🔍 Still waiting for editor element... (attempt ' + attempts + '/30)');
+                }
               }
 
               if (!editor) {
+                console.error('[Chetty:GeminiWeb] ❌ Could not locate Gemini input box on the page!');
                 throw new Error(
                   'Could not locate Gemini input box on the page. Please ensure you are logged in to gemini.google.com.'
                 );
               }
+              console.log('[Chetty:GeminiWeb] ✅ Input editor located:', editor.tagName, editor.className);
 
               // 2. Snapshot current state of conversation BEFORE typing new prompt
               const scroller = document.querySelector('infinite-scroller') || document.querySelector('main') || document.body;
@@ -337,8 +370,10 @@ export default defineBackground(() => {
                 )
               );
               const initialResponseCount = priorResponseEls.length;
+              console.log('[Chetty:GeminiWeb] 📸 Pre-prompt snapshot -> scroller children:', initialChildCount, '| prior model responses:', initialResponseCount);
 
               // 3. Focus and Enter Prompt
+              console.log('[Chetty:GeminiWeb] ✍️ Typing prompt into editor...');
               editor.focus();
               document.execCommand('selectAll', false, undefined);
               document.execCommand('delete', false, undefined);
@@ -383,9 +418,10 @@ export default defineBackground(() => {
 
               const sendBtn = findSendBtn();
               if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
+                console.log('[Chetty:GeminiWeb] 🚀 Clicking Send button:', sendBtn.getAttribute('aria-label') || sendBtn.className);
                 sendBtn.click();
               } else {
-                // Fallback: dispatch Enter
+                console.log('[Chetty:GeminiWeb] 🚀 Send button not clickable or not found, dispatching Enter key event fallback...');
                 editor.dispatchEvent(
                   new KeyboardEvent('keydown', {
                     key: 'Enter',
@@ -412,6 +448,7 @@ export default defineBackground(() => {
               };
 
               // 5. Wait for generation to register (up to 10s)
+              console.log('[Chetty:GeminiWeb] ⏳ Waiting for Gemini to register the prompt and begin generating...');
               let waitAttempts = 0;
               while (waitAttempts < 35) {
                 if (isAborted()) throw new Error('Generation cancelled by user.');
@@ -421,11 +458,22 @@ export default defineBackground(() => {
                 const currentResponses = document.querySelectorAll(
                   'message-content, model-response, [data-message-author-role="model"], .response-content'
                 );
+                const busy = isGeneratingOrThinking();
+                const childrenNow = scroller ? scroller.children.length : 0;
+
                 if (
                   currentResponses.length > initialResponseCount ||
-                  isGeneratingOrThinking() ||
-                  (scroller && scroller.children.length > initialChildCount)
+                  busy ||
+                  childrenNow > initialChildCount
                 ) {
+                  console.log('[Chetty:GeminiWeb] ⚡ Generation registered!', {
+                    waitAttempts,
+                    newResponsesCount: currentResponses.length,
+                    initialResponseCount,
+                    isBusy: busy,
+                    scrollerChildren: childrenNow,
+                    initialChildCount,
+                  });
                   break;
                 }
               }
@@ -463,14 +511,20 @@ export default defineBackground(() => {
               };
 
               // 7. Fast-polling loop with live streaming chunks (120ms interval)
+              console.log('[Chetty:GeminiWeb] 🔄 Entering streaming & polling loop (120ms interval, max 120s timeout)...');
               let lastText = '';
               let stableIterations = 0;
+              let pollIteration = 0;
               const maxTimeoutMs = 120000;
               const startTime = Date.now();
 
               while (Date.now() - startTime < maxTimeoutMs) {
-                if (isAborted()) throw new Error('Generation cancelled by user.');
+                if (isAborted()) {
+                  console.warn('[Chetty:GeminiWeb] 🛑 Polling loop aborted by user action!');
+                  throw new Error('Generation cancelled by user.');
+                }
                 await new Promise((r) => setTimeout(r, 120));
+                pollIteration++;
 
                 const targetEl = getNewResponseElement();
                 const busy = isGeneratingOrThinking();
@@ -480,6 +534,7 @@ export default defineBackground(() => {
                   if (currentText && currentText !== lastText) {
                     lastText = currentText;
                     stableIterations = 0;
+                    console.log('[Chetty:GeminiWeb] 📡 Text updated (iteration ' + pollIteration + ', len: ' + currentText.length + '):', currentText.slice(-60));
                     try {
                       chrome.runtime.sendMessage({
                         type: 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE',
@@ -490,19 +545,24 @@ export default defineBackground(() => {
                     } catch { }
                   } else if (lastText && !busy) {
                     stableIterations++;
+                    console.log('[Chetty:GeminiWeb] 💤 Stable check (' + stableIterations + '/5) | busy is FALSE');
                     // If not busy for ~600ms and text is stable, generation is complete!
                     if (stableIterations >= 5) {
+                      console.log('[Chetty:GeminiWeb] 🏁 Generation completed naturally! (Text stable for 5 checks without busy state)');
                       break;
                     }
+                  } else if (pollIteration % 25 === 0) {
+                    console.log('[Chetty:GeminiWeb] ⏳ Generating in progress... elapsed: ' + (Date.now() - startTime) + 'ms | busy:', busy, '| current text len:', lastText.length);
                   }
                 } else if (!busy && waitAttempts >= 30) {
-                  // If thinking stopped and no target element found after ample wait
+                  console.warn('[Chetty:GeminiWeb] ⚠️ Generation stopped (busy is false) but no response element found.');
                   break;
                 }
               }
 
               // Send final stream chunk indicating completion
               if (lastText) {
+                console.log('[Chetty:GeminiWeb] 📤 Emitting final stream chunk (done: true, length: ' + lastText.length + ')');
                 try {
                   chrome.runtime.sendMessage({
                     type: 'CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE',
@@ -517,6 +577,12 @@ export default defineBackground(() => {
               const pathMatch = window.location.pathname.match(/\/app\/([a-zA-Z0-9_-]+)/);
               const newConvId = pathMatch && pathMatch[1] !== 'app' ? pathMatch[1] : null;
 
+              console.log('[Chetty:GeminiWeb] ✅ In-page automation completed! Final result:', {
+                responseTextLength: lastText.length,
+                newConversationId: newConvId,
+                currentUrl: window.location.href,
+              });
+
               return {
                 responseText: lastText,
                 newConversationId: newConvId,
@@ -530,6 +596,12 @@ export default defineBackground(() => {
           }
 
           const result = executionResults && executionResults[0]?.result;
+          console.log('[Chetty:Background] 📥 Script execution returned to background:', {
+            hasResult: !!result,
+            responseTextLength: result?.responseText?.length,
+            newConversationId: result?.newConversationId,
+          });
+
           if (!result || !result.responseText) {
             throw new Error('Gemini Web did not return any response text. Please check the Gemini tab.');
           }
@@ -540,18 +612,22 @@ export default defineBackground(() => {
             newConversationId: result.newConversationId,
           });
         } catch (err) {
-          console.error('[Chetty Background] Gemini automation error:', err);
+          console.error('[Chetty:Background] ❌ Gemini automation error:', err);
           sendResponse({
             success: false,
             error: (err as Error).message || 'Failed to automate prompt on Gemini Web',
           });
         } finally {
           // Release lock only if still the active prompt token
+          console.log('[Chetty:Background] 🔓 Entering finally block. currentToken:', currentToken, 'activePromptToken:', activePromptToken);
           if (currentToken === activePromptToken) {
             await updateGeminiWebConfig({ isBusy: false, busySessionId: null });
+            console.log('[Chetty:Background] ✅ Released Gemini busy lock in storage.');
             activeOriginTabId = null;
             activeGeminiTabId = null;
             activeSessionId = null;
+          } else {
+            console.log('[Chetty:Background] ℹ️ Token mismatch, lock was already invalidated or overtaken.');
           }
         }
       })();
