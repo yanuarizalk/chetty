@@ -272,8 +272,12 @@ export class FloatingWindow {
       );
       if (confirmed) {
         try {
+          // Preserve any response text already received in the chatbox
+          await this.finalizePartialStreamResponse();
           console.log('[Chetty:Chatbox] 🔓 Sending CHETTY_FORCE_UNLOCK_GEMINI message to background...');
           await chrome.runtime.sendMessage({ type: 'CHETTY_FORCE_UNLOCK_GEMINI' });
+          this.setChatboxInputLocked(false);
+          this.removeChatboxLoadingInfo();
           console.log('[Chetty:Chatbox] 🔓 CHETTY_FORCE_UNLOCK_GEMINI message sent successfully');
         } catch (err) {
           console.error('[Chetty:Chatbox] ❌ Failed to force unlock:', err);
@@ -369,16 +373,33 @@ export class FloatingWindow {
   }
 
   /**
-   * Step 8: Remove loading information from chatbox
+   * Step 8: Remove loading information from chatbox (does not remove streamed responses)
    */
   private removeChatboxLoadingInfo(): void {
     const loadingRow = this.container.querySelector(`#loading-${this.session.id}`);
     if (loadingRow) {
       loadingRow.remove();
     }
+  }
+
+  /**
+   * Save partial streamed text to session if generation was aborted or stopped
+   */
+  private async finalizePartialStreamResponse(): Promise<void> {
     const streamingRow = this.container.querySelector(`#streaming-${this.session.id}`);
-    if (streamingRow) {
-      streamingRow.remove();
+    if (!streamingRow) return;
+
+    streamingRow.querySelector('.chetty-cursor')?.remove();
+    const contentEl = streamingRow.querySelector('.chetty-streaming-content');
+    const text = contentEl?.textContent?.trim() || '';
+
+    if (text && text !== 'Thinking...') {
+      console.log('[Chetty:Chatbox] 💾 Preserving already received response before unlock:', text.length);
+      await addMessageToSession(this.session.id, {
+        role: 'model',
+        text: text,
+      });
+      this.renderMessages();
     }
   }
 
@@ -493,22 +514,36 @@ export class FloatingWindow {
             }
             this.scrollToBottom();
           },
-          onError: (err) => {
+          onError: async (err) => {
             console.error('[Chetty:Chatbox] ❌ onError in streamMessage:', err);
             // Step 8: Remove loading info
             this.removeChatboxLoadingInfo();
 
-            const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
-            const errRow = document.createElement('div');
-            errRow.className = 'chetty-msg-row ai';
-            errRow.innerHTML = `
-              <div class="chetty-msg-author">✦ Chetty</div>
-              <div class="chetty-msg-bubble">
-                <span style="color:var(--chetty-danger);">⚠️ ${this.escapeHtml(err.message)}</span>
-              </div>
-            `;
-            messagesEl?.appendChild(errRow);
-            this.scrollToBottom();
+            // Stop cursor on active streaming row
+            const streamingRow = this.container.querySelector(`#streaming-${this.session.id}`);
+            streamingRow?.querySelector('.chetty-cursor')?.remove();
+
+            // If we already received response text, preserve and save it into the session
+            if (accumulatedResponse.trim()) {
+              console.log('[Chetty:Chatbox] 💾 Preserving already received response upon error/abort:', accumulatedResponse.length);
+              await addMessageToSession(this.session.id, {
+                role: 'model',
+                text: accumulatedResponse.trim(),
+              });
+              this.renderMessages();
+            } else {
+              const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
+              const errRow = document.createElement('div');
+              errRow.className = 'chetty-msg-row ai';
+              errRow.innerHTML = `
+                <div class="chetty-msg-author">✦ Chetty</div>
+                <div class="chetty-msg-bubble">
+                  <span style="color:var(--chetty-danger);">⚠️ ${this.escapeHtml(err.message)}</span>
+                </div>
+              `;
+              messagesEl?.appendChild(errRow);
+              this.scrollToBottom();
+            }
 
             // Step 10: Release the lock
             this.setChatboxInputLocked(false);
@@ -542,17 +577,16 @@ export class FloatingWindow {
       console.error('[Chetty:Chatbox] 💥 Exception in sendMessage:', err);
       this.removeChatboxLoadingInfo();
 
-      const messagesEl = this.container.querySelector(`#messages-${this.session.id}`);
-      const errRow = document.createElement('div');
-      errRow.className = 'chetty-msg-row ai';
-      errRow.innerHTML = `
-        <div class="chetty-msg-author">✦ Chetty</div>
-        <div class="chetty-msg-bubble">
-          <span style="color:var(--chetty-danger);">⚠️ ${(err as Error).message}</span>
-        </div>
-      `;
-      messagesEl?.appendChild(errRow);
-      this.scrollToBottom();
+      const streamingRow = this.container.querySelector(`#streaming-${this.session.id}`);
+      streamingRow?.querySelector('.chetty-cursor')?.remove();
+
+      if (accumulatedResponse.trim()) {
+        await addMessageToSession(this.session.id, {
+          role: 'model',
+          text: accumulatedResponse.trim(),
+        });
+        this.renderMessages();
+      }
 
       this.setChatboxInputLocked(false);
     }

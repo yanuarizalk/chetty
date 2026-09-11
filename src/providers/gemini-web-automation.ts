@@ -190,20 +190,46 @@ export async function runInPageGeminiSimulation(
       });
 
       // --- SUB-ROUTINE 3: Fill Chat Input (Step 4.2) ---
+      // In background tabs, execCommand can fail without focus.
+      // We populate <p> child elements directly inside rich-textarea contenteditable,
+      // then dispatch full sequence of InputEvent/change events so Angular detects it.
       editor.focus();
-      document.execCommand('selectAll', false, undefined);
-      document.execCommand('delete', false, undefined);
-
-      const inserted = document.execCommand('insertText', false, prompt);
-      if (!inserted) {
-        if (editor.tagName.toLowerCase() === 'textarea') {
-          (editor as HTMLTextAreaElement).value = prompt;
-        } else {
-          editor.textContent = prompt;
-        }
+      while (editor.firstChild) {
+        editor.removeChild(editor.firstChild);
       }
 
-      editor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+      const lines = prompt.split('\n');
+      for (const line of lines) {
+        const p = document.createElement('p');
+        if (line) {
+          p.textContent = line;
+        } else {
+          p.appendChild(document.createElement('br'));
+        }
+        editor.appendChild(p);
+      }
+
+      // Also set selection range inside editor
+      try {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      } catch { }
+
+      // Dispatch full input events to notify Angular framework
+      editor.dispatchEvent(new Event('focus', { bubbles: true }));
+      editor.dispatchEvent(
+        new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          data: prompt,
+          inputType: 'insertText',
+        })
+      );
       editor.dispatchEvent(
         new InputEvent('input', {
           bubbles: true,
@@ -212,37 +238,72 @@ export async function runInPageGeminiSimulation(
           inputType: 'insertText',
         })
       );
+      editor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
       editor.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
-      await new Promise((r) => setTimeout(r, 250));
 
       // --- SUB-ROUTINE 4: Submit Prompt (Step 4.4) ---
       const findSendButton = (): HTMLButtonElement | null => {
+        const directBtn = document.querySelector(
+          'button.send-button, button[aria-label*="Send" i], button[aria-label*="Kirim" i], button[mattooltip*="Send" i], button.submit, [data-test-id="send-button"]'
+        ) as HTMLButtonElement | null;
+        if (directBtn) return directBtn;
+
         const buttons = Array.from(document.querySelectorAll('button')) as HTMLButtonElement[];
         return (
           buttons.find((b) => {
             const label = (b.getAttribute('aria-label') || b.getAttribute('mattooltip') || b.className || '').toLowerCase();
-            return label.includes('send') || label.includes('submit') || label.includes('send-button');
+            const hasSendIcon = !!b.querySelector('mat-icon, [data-icon="send"], svg');
+            return (
+              label.includes('send') ||
+              label.includes('kirim') ||
+              label.includes('submit') ||
+              label.includes('send-button') ||
+              (hasSendIcon && !label.includes('mic') && !label.includes('voice'))
+            );
           }) || null
         );
       };
 
-      const sendBtn = findSendButton();
-      if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
-        console.log('[Chetty:GeminiWeb] 🚀 Submitting via Send button click');
-        sendBtn.click();
-      } else {
-        console.log('[Chetty:GeminiWeb] 🚀 Submitting via Enter key event fallback');
-        editor.dispatchEvent(
-          new KeyboardEvent('keydown', {
-            key: 'Enter',
-            code: 'Enter',
-            keyCode: 13,
-            which: 13,
-            bubbles: true,
-            composed: true,
-          })
-        );
+      // Poll up to 2 seconds for Angular to update Send button state in background
+      let sendBtn = findSendButton();
+      let waitCount = 0;
+      while (waitCount < 20) {
+        if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+        editor.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        sendBtn = findSendButton();
+        waitCount++;
       }
+
+      if (sendBtn) {
+        // Force enable in case Angular left disabled attribute
+        sendBtn.disabled = false;
+        sendBtn.removeAttribute('disabled');
+        sendBtn.setAttribute('aria-disabled', 'false');
+
+        console.log('[Chetty:GeminiWeb] 🚀 Submitting via Send button');
+        sendBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window }));
+        sendBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+        sendBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window }));
+        sendBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+        sendBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        sendBtn.click();
+      }
+
+      // Also dispatch Enter key event as supplementary fallback
+      editor.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+        })
+      );
 
       // --- SUB-ROUTINES FOR STEP 7: Check Thinking, Mic State & Model Response Node ---
       // 7.1: Check if thinking-dots-animation or pending request is visible
@@ -268,34 +329,13 @@ export async function runInPageGeminiSimulation(
         );
       };
 
-      // 7.2: Check if action button has reverted to mic (dictate) or idle submit state (no stop button)
-      const isInputSubmittableOrMicOnly = (): boolean => {
+      // 7.2: Check if generation stop button is present anywhere
+      const isStopButtonPresent = (): boolean => {
         const buttons = Array.from(document.querySelectorAll('button'));
-
-        // Check if Stop button is active
-        const hasStopButton = buttons.some((b) => {
+        return buttons.some((b) => {
           const label = (b.getAttribute('aria-label') || b.getAttribute('mattooltip') || '').toLowerCase();
-          return label.includes('stop') || label.includes('cancel');
+          return label.includes('stop') || label.includes('cancel') || label.includes('berhenti');
         });
-        if (hasStopButton) return false;
-
-        // Check for mic / dictate button (Gemini's idle state before user types)
-        const hasMicButton = buttons.some((b) => {
-          const label = (b.getAttribute('aria-label') || b.getAttribute('mattooltip') || '').toLowerCase();
-          const hasMicIcon = !!b.querySelector('mat-icon, [data-icon="mic"], svg');
-          return (
-            label.includes('mic') ||
-            label.includes('dictate') ||
-            label.includes('voice') ||
-            (hasMicIcon && (label.includes('use') || label.includes('microphone')))
-          );
-        });
-
-        // Or send button is available / idle
-        const sendBtn = findSendButton();
-        const isSendReady = sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true';
-
-        return hasMicButton || !!isSendReady;
       };
 
       // 7.3: Find new model response node matching #model-response-message-xxxxxx
@@ -321,6 +361,12 @@ export async function runInPageGeminiSimulation(
           if (!priorResponseIds.has(node.id)) {
             return node;
           }
+        }
+
+        // Third: Fallback to latest message content element
+        const allResponses = Array.from(document.querySelectorAll('message-content, model-response, .response-content')) as HTMLElement[];
+        if (allResponses.length > 0) {
+          return allResponses[allResponses.length - 1];
         }
 
         return null;
@@ -359,6 +405,7 @@ export async function runInPageGeminiSimulation(
       console.log('[Chetty:GeminiWeb] 🔄 Listening for division change in infinite-scroller...');
       let lastText = '';
       let stableChecks = 0;
+      let totalChecks = 0;
       const startTime = Date.now();
       const maxTimeoutMs = 120000;
 
@@ -369,9 +416,13 @@ export async function runInPageGeminiSimulation(
         }
 
         await new Promise((r) => setTimeout(r, 120));
+        totalChecks++;
 
         // 7.1: Ignore / continue waiting if thinking-dots-animation is visible
         const thinking = isThinkingAnimationVisible();
+
+        // 7.2: Check if Stop button is still active
+        const hasStopButton = isStopButtonPresent();
 
         // 7.3: Look for model response node
         const modelNode = findNewModelResponseNode();
@@ -393,17 +444,24 @@ export async function runInPageGeminiSimulation(
             } catch { }
           }
 
-          // 7.2: Wait till input is submittable / button consists of mic(dictate) and thinking is gone
-          const submittableOrMic = isInputSubmittableOrMicOnly();
-
-          if (!thinking && submittableOrMic && lastText.length > 0) {
+          // Complete early as soon as:
+          // 1. Thinking animation is gone (7.1)
+          // 2. Stop button is gone / mic active (7.2)
+          // 3. Model node text is non-empty and stable for ~240ms (2 checks)
+          if (!thinking && !hasStopButton && lastText.length > 0) {
             stableChecks++;
-            if (stableChecks >= 4) {
-              console.log('[Chetty:GeminiWeb] 🏁 Generation complete! Node #model-response-message confirmed, thinking gone, mic/submittable state active.');
+            if (stableChecks >= 2) {
+              console.log('[Chetty:GeminiWeb] 🏁 Generation completed early! (Stop button gone, thinking gone, text stable)');
               break;
             }
           } else {
             stableChecks = 0;
+          }
+
+          // Safety fallback: if text has been non-empty and completely unchanged for >2.5s (20 checks), complete early
+          if (lastText.length > 0 && totalChecks > 20 && !thinking && stableChecks >= 15) {
+            console.log('[Chetty:GeminiWeb] 🏁 Safety fallback complete: text has been idle.');
+            break;
           }
         }
       }
