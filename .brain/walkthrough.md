@@ -1,85 +1,143 @@
-# Walkthrough - Gemini Web Tab Simulation, Zero OAuth & Native Chat UI
+# Walkthrough - Real-Time Response Streaming, Accurate DOM Turn Targeting, Network Request Tracking & Emergency Force Unlock
 
-Chetty has transitioned to automating the user's active **Gemini Web (`gemini.google.com`)** tab, eliminating all OAuth scopes, client IDs, and external Google Cloud configurations, and now includes a **dedicated native chat input & message UI**.
-
----
-
-## Key Changes Implemented
-
-### 1. Dedicated Native Chat Input Footer & Message UI
-- **First-Class Input in Chatbox Layout**:
-  - Added `.chetty-footer` with an auto-resizing `<textarea id="input-${this.session.id}">` and a modern paper plane Send button `<button id="btn-send-${this.session.id}">`.
-  - **Auto-Expanding Textarea**: Textarea grows dynamically up to 120px as the user types multi-line messages, and resets on submit.
-  - **Keyboard Shortcuts**: `Enter` immediately submits the message; `Shift + Enter` inserts a newline.
-  - **Empty State & Suggestion Chips**: Shows a welcome card with actionable suggestion chips ("Summarize this page", "Key takeaways", "Explain in simple terms") when a new session has no messages.
-  - **Bubble UI**: Clean user messages with context tags, and AI response cards with typing indicator (`.chetty-cursor`), code block formatting, and timestamps.
-  - **Lighter Footprint**: Replaced the bulky Web Component dependency with native content-script DOM rendering, cutting `content.js` bundle size from **738 KB down to 290 KB**.
-
-### 2. Zero OAuth & Clean Permissions
-- **Deleted All OAuth Logic**: Completely removed `src/auth/` and `entrypoints/oauth-callback/`.
-- **Manifest Cleared**: Removed `identity` permission from `wxt.config.ts`.
-- **Cross-Browser MV3 Compatible**: Retained only standard MV3 permissions (`storage`, `tabs`, `activeTab`, `scripting`) and `<all_urls>`.
-
-### 3. Provider-Driven Popup UI (`Select Gemini Active Web`)
-- In `src/types/provider.ts`, added `renderPopupSettings?(container: HTMLElement): Promise<void> | void` to `IChatProvider`.
-- `GeminiChatProvider` implements `renderPopupSettings`:
-  - Scans open browser tabs for `gemini.google.com`.
-  - Presents an active tab selector dropdown with real-time status badges (`Connected`, `Busy Generating`, `Offline`).
-  - Provides a quick 🔄 refresh button and 🌐 "Open gemini.google.com" action.
-  - Extension popup dynamically mounts the active provider's configuration card into `#provider-settings-container`.
-
-### 4. Session-to-Gemini URL Mapping
-- New Chetty sessions start clean on `https://gemini.google.com/app`.
-- On the first prompt in a session, the background automation script detects the newly created Gemini conversation URL (`https://gemini.google.com/app/<id>`) and persists `geminiConversationId` to the Chetty session in storage.
-- When prompting in an existing session later, the automation script ensures the Gemini tab is navigated to `https://gemini.google.com/app/<id>`, preserving full multi-turn conversation context directly on Google's platform.
-
-### 5. Background DOM Automation Broker
-- In `entrypoints/background.ts`, handles `CHETTY_GEMINI_AUTOMATE_PROMPT`:
-  - **Input Targeting**: Targets `rich-textarea div[contenteditable="true"]`, `div[contenteditable="true"][role="textbox"]`, or `textarea`.
-  - **Text Injection**: Uses `document.execCommand('insertText')` and dispatches `beforeinput`, `input`, and `change` events so Gemini's Angular/framework state recognizes the new prompt.
-  - **Send Dispatch**: Dispatches Enter key and clicks `button[aria-label*="Send"]`.
-  - **Response Streaming & Polling**: Observes model output containers (`message-content`, `model-response`, `[data-message-author-role="model"]`), polling periodically and streaming incremental chunks back to the floating chatbox.
-  - **Completion Detection**: Watches the generation state until the Stop/Cancel button disappears and output stabilizes.
-
-### 6. Synchronous Execution & Global Mutex
-- Since prompts share the user's active Gemini web tab, generation runs **synchronously**:
-  - Global `isBusy` flag in settings prevents concurrent prompt submissions across windows or tabs.
-  - All floating chatbox instances display the amber busy banner (`⏳ Gemini Web is generating... / Input locked`).
-  - Textarea and Send button are disabled with an informative placeholder during generation and re-enabled as soon as generation completes.
+This update addresses two critical issues and subsequent locking prevention:
+1. **Real-time text streaming & prompt response targeting**: Eliminates multi-minute prompt completion delays, correctly distinguishes the new prompt from previous conversation turns by tracking `infinite-scroller` child indices and response counts, monitors `thinking-dots-animation` / `pending-request`, and streams tokens incrementally back to Chetty's floating window every 100ms.
+2. **Post-Prompt Lock Resolution (StreamGenerate Network Hook & Stop/Mic Button Validation)**: Solves the issue where Chetty remained locked after Gemini finished generating:
+   - Hooks into `chrome.webRequest` (`StreamGenerate` / `BardFrontendService`) to detect exact HTTP stream completion.
+   - Monitors the state of the bottom toolbar: actively verifies when the Stop button disappears and the Mic or Send button returns.
+   - Eliminates generic DOM queries (like `.sparkle-animation` or progress bars) that were permanently matching and keeping `busy: true`.
+   - Incorporates multiple fast-exit conditions (200ms–400ms after generation ends).
+3. **Emergency Force Unlock in Extension Popup & Chatbox**: When prompt automation encounters provider timeouts, network disruptions, or failures that would leave the chatbox locked in a busy state, the user can now force unlock Gemini directly from the popup (or the chatbox banner) with clear caution messaging that pending requests will be discarded and must be manually retried.
 
 ---
 
-## Build & Compile Verification
+## Changes Implemented
 
-Both targets compile and build without warnings or errors:
+### 1. StreamGenerate Network Listening & Stop/Mic Button Validation (`entrypoints/background.ts`)
+- **`chrome.webRequest` Hook on `StreamGenerate`**:
+  - Added `'webRequest'` permission to [wxt.config.ts](file:///d:/Projects/chetty/wxt.config.ts).
+  - Background service worker listens to `chrome.webRequest.onCompleted` and `onErrorOccurred` specifically for `StreamGenerate` and `BardFrontendService` endpoints on the Gemini tab.
+  - When the HTTP stream finishes, it sets `window.__chettyStreamGenerateDone = true` on the page context.
+- **Accurate Stop & Mic Button State Detection**:
+  - `isStopButtonVisible()`: Checks whether a button with `stop` or `cancel generation` (and not `mic`) is present, visible (`display !== 'none'`, `visibility !== 'hidden'`), and has positive dimensions.
+  - `hasMicOrSendButtonReturned()`: Checks whether the Microphone button (`aria-label*="mic"` or `aria-label*="microphone"`) or Send button has reappeared in the input toolbar.
+  - `isThinkingAnimationVisible()`: Checks whether `thinking-dots-animation` inside `pending-request` is actually visible.
+- **Fast Exit Conditions**:
+  1. **HTTP Stream Done**: If `StreamGenerate` completed and text is stable for 2 iterations (~200ms) with no Stop button -> **exits immediately**.
+  2. **Button State Transition**: If Stop button disappeared and Mic/Send button returned with text stable for 3 iterations (~300ms) -> **exits immediately**.
+  3. **Thinking Done**: If thinking dots are gone and text is stable for 4 iterations (~400ms) -> **exits immediately**.
+  4. **Fallback Stability**: If text is unchanged for 10 iterations (~1000ms) with no Stop button -> **exits immediately**.
+  5. Maximum safety timeout reduced to 60s.
 
-```bash
-# TypeScript Compile Check
-pnpm run compile
-# Exit code 0 (0 errors)
+### 2. Accurate DOM Turn Targeting & Streaming Loop (`entrypoints/background.ts`)
+- **Pre-Prompt Snapshotting**:
+  - Records `initialChildCount` of `infinite-scroller` and `initialResponseCount` before prompt submission to guarantee response scraping never reads previous turns.
+- **Live Incremental Streaming (100ms intervals)**:
+  - Dispatches `CHETTY_GEMINI_STREAM_CHUNK_FROM_PAGE` to the background broker, which routes chunks to `activeOriginTabId`.
+  - Dispatches a final `done: true` chunk upon completion.
 
-# Multi-Browser MV3 Builds
-pnpm run build:all
-# Chrome MV3: Built in 0.99s -> .output/chrome-mv3 (544 KB total)
-# Firefox MV3: Built in 0.99s -> .output/firefox-mv3 (544 KB total)
-```
+### 3. Client-Side Live Stream Accumulation (`src/components/floating-window.ts`)
+- Updated `onChunk` to set `accumulatedResponse = chunk;` (direct assignment rather than concatenation), correctly formatting streaming markdown tokens without string repetition.
+
+### 4. Emergency Force Unlock Feature (`src/providers/gemini.ts` & `entrypoints/background.ts`)
+- **Popup Extension Option**:
+  - Added a **Prompt Lock State** card in the extension popup with real-time status indicator and a `🔓 Force Unlock` button.
+  - Displays caution text:
+    > ⚠️ **Caution**: Unlocking releases the lock and stops listening to any stuck in-flight prompt. The pending prompt will need to be retried manually.
+- **Chatbox Inline Unlock**:
+  - Added an inline `Unlock` button in the amber `.chetty-busy-banner` on the floating chatbox.
+- **Cancellation Handler**:
+  - Aborts in-flight automation, notifies client tab with `{ aborted: true }`, and releases `isBusy: false` in storage.
 
 ---
 
-## How to Test
+## Background Tab Automation, Early Completion & Response Preservation
 
-1. **Load Extension in Chrome or Firefox**:
-   - **Chrome**: Go to `chrome://extensions` -> **Developer mode** -> **Load unpacked** -> select `chetty/.output/chrome-mv3`.
-   - **Firefox**: Go to `about:debugging#/runtime/this-firefox` -> **Load Temporary Add-on** -> select `chetty/.output/firefox-mv3/manifest.json`.
-2. **Open Gemini**:
-   - Open a tab with `https://gemini.google.com/app` and ensure you are signed in.
-3. **Select Active Gemini Tab**:
-   - Click Chetty's toolbar icon.
-   - The provider card shows **✦ Select Gemini Active Web** with your active Gemini tab detected and status **Connected**.
-4. **Open a Chatbox Session**:
-   - Click **Start New Session**. The floating window opens over the active webpage.
-   - Notice the dedicated input footer at the bottom: textarea with placeholder, Send button, and shortcut hints.
-5. **Send a Prompt**:
-   - Type a question or click one of the quick suggestion chips ("📝 Summarize this page").
-   - Press Enter or click the Send button.
-   - Chetty navigates the Gemini tab, types the prompt, clicks send, streams the response in real-time with an animated cursor, and locks input across all tabs while generating.
+1. **Response Preservation on Release / Abort / Force Unlock**:
+   - `removeChatboxLoadingInfo()` now strictly removes only the loading indicator (`.chetty-loading-row`), leaving any streamed response (`#streaming-...`) intact in the chatbox.
+   - `finalizePartialStreamResponse()` was introduced: when the user unlocks or aborts, any already received response text is automatically committed to `addMessageToSession()` so the streamed output is **never deleted or lost**.
+   - `onError` and `catch` blocks also preserve any received text instead of clearing it.
+
+2. **Automating Directly in Background Tabs (No Tab Focus Required)**:
+   - Previously, `document.execCommand('insertText')` and synthetic Enter key events were failing when the Gemini tab was not the active focused tab, causing the Send button to remain disabled.
+   - Replaced with direct `<p>` element hierarchy population inside `rich-textarea[contenteditable="true"]` + selection range creation + complete event dispatch (`focus`, `beforeinput`, `input` with `inputType: 'insertText'`, and `change`).
+   - Added polling for the Send button to become enabled, followed by clearing any lingering disabled attributes and dispatching pointer/mouse click sequences (`pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click`, `.click()`).
+   - The user never needs to switch to or focus the Gemini tab.
+
+3. **Early Completion (Fixing Post-Generation Locking)**:
+   - Previously, the polling loop in `runInPageGeminiSimulation` hung waiting for English-specific mic button labels and idle send state, failing to break even after Gemini Web sent the complete response.
+   - Fixed: As soon as the Stop button is gone (`!isStopButtonPresent()`), thinking animations are gone (`!isThinkingAnimationVisible()`), and the model response node text is non-empty and stable for ~240ms (2 checks), the polling loop breaks immediately.
+   - `runInPageGeminiSimulation` resolves and returns immediately, releasing the lock without delay.
+
+---
+
+## Verification Results
+
+- `pnpm run compile`: **0 errors** (Clean TypeScript compile)
+- `pnpm run build:all`: **Success**
+  - Built Chrome MV3 extension (`.output/chrome-mv3/` - 571.85 kB)
+  - Built Firefox MV3 extension (`.output/firefox-mv3/` - 571.84 kB)
+
+## Debug Logging Implementation
+
+Comprehensive, structured `console.log` logging has been added across every stage of the extension's execution lifecycle.
+
+### Log Categories & Where to Inspect
+
+| Tag Prefix | Context / Location | Where to Inspect in DevTools | Key Events Logged |
+| :--- | :--- | :--- | :--- |
+| `[Chetty:Chatbox]` | Webpage Content Script (Floating Window) | Webpage DevTools Console (F12 on active tab) | User typing, Send button click, context extraction, message streaming (`onChunk`, `onError`, `onFinish`), state transitions (`updateBusyState`), unlock button |
+| `[Chetty:Provider]` | Chat Provider (`gemini.ts`) | Webpage DevTools Console & Extension Popup Console | Provider initialization, model selection, prompt dispatching, stream chunk routing, unlock triggers |
+| `[Chetty:Background]` | Extension Background Service Worker | `chrome://extensions` -> Chetty -> **Inspect views: service worker** (or `about:debugging` in Firefox) | Tab message routing, prompt automation handler, busy lock acquisition/release, SPA navigation, script injection |
+| `[Chetty:GeminiWeb]` | Gemini Web In-Page Script (`gemini.google.com`) | Gemini Web Tab DevTools Console (F12 on `gemini.google.com`) | Editor discovery (`rich-textarea`), pre-prompt DOM snapshots, input event dispatch, Send button clicks, generation indicator checks (`pending-request`, `thinking-dots`, stop buttons), 120ms polling iterations, live stream emissions, natural completion detection |
+
+---
+
+## Prompting Procedure Architecture (10-Step Specification)
+
+A modular and clean architecture has been implemented to handle the complete Gemini Web prompting procedure:
+
+1. **Prompt-Only Navigation**:
+   - Navigation to `gemini.google.com/app` or `gemini.google.com/app/<conversationId>` occurs **only when prompting**.
+   - Removed pre-emptive navigation from session creation handlers (`CHETTY_BG_NEW_SESSION`).
+2. **Immediate User Bubble**:
+   - `addImmediateUserBubble()` is triggered synchronously upon user prompt submission.
+   - The user's chat bubble appears instantly without waiting for context gathering or provider responses.
+3. **Gemini Web Readiness Check** (`checkGeminiWebReadiness` in [gemini-web-automation.ts](file:///d:/Projects/chetty/src/providers/gemini-web-automation.ts)):
+   - **3.1**: Verifies `document.readyState` is active/complete.
+   - **3.2**: Compares destination URL and triggers navigation only if destination differs, waiting for navigation completion.
+   - **3.3**: Verifies that the chat input editor is mounted, visible, and editable.
+4. **Prompt Automation & Simulation** (`runInPageGeminiSimulation` in [gemini-web-automation.ts](file:///d:/Projects/chetty/src/providers/gemini-web-automation.ts)):
+   - **4.1**: Navigates to target conversation or new chat.
+   - **4.2**: Fills input with prompt text and dispatches `InputEvent` & `change` events.
+   - **4.3**: Snapshots existing child divisions in `<infinite-scroller>` so the listener can ignore them.
+   - **4.4**: Submits prompt via Send button click or Enter key fallback.
+5. **Chatbox Input Locking**:
+   - `setChatboxInputLocked(true)` immediately disables textarea and Send button across all sessions, displaying busy status.
+6. **Chatbox Loading Indicator**:
+   - Displays a dedicated loading row (`.chetty-loading-row`) with animated sparkle and status text inside the floating box.
+7. **Scroller Division Listener & Completion Detection**:
+   - **7.1**: Continues waiting/ignoring while `thinking-dots-animation` or `pending-request` is visible.
+   - **7.2**: Waits until the input/action button reverts to mic (dictate) or idle state (Stop button gone).
+   - **7.3**: Inspects new division elements for `#model-response-message-xxxxxx` selector (`[id^="model-response-message-"]`).
+8. **Remove Loading Indicator**:
+   - `removeChatboxLoadingInfo()` cleanly removes the loading bubble upon response completion or error.
+9. **Semantic HTML Extraction & Clean Rendering**:
+   - `extractCleanNodeContent()` clones the model response node, strips auxiliary UI widgets (copy buttons, TTS controls, feedback thumbs), and removes all Gemini classes, IDs, styles, and Angular attributes.
+   - Preserves semantic elements (`<p>`, `<ul>`, `<ol>`, `<li>`, `<code>`, `<pre>`, `<table>`, `<th>`, `<td>`, `<a>`, `<strong>`, `<em>`, `<blockquote>`) for maximum readability in the chatbox.
+10. **Release Lock**:
+    - `setChatboxInputLocked(false)` releases the UI lock and resets storage busy states.
+
+---
+
+## Verification & Usage Instructions
+
+1. **Verify Lock Releases Promptly After Gemini Generation**:
+   - Open Gemini in a browser tab.
+   - Open Chetty on any page and submit a prompt.
+   - Watch Gemini Web generate:
+     - The Stop button appears on Gemini's input bar.
+     - Tokens stream live into Chetty's floating box.
+     - As soon as Gemini finishes, the Stop button turns back into the Microphone/Send button, the `StreamGenerate` HTTP request completes, and Chetty exits the loop and releases the busy lock in under 300ms!
+2. **Verify Force Unlock**:
+   - If ever needed, click **Unlock** on the chatbox banner or open the popup and click **🔓 Force Unlock** to immediately release any locked state.
